@@ -153,6 +153,19 @@ corruption — it is preserved evidence from an abandoned run. `validate` report
 `blocker_count_at_handoff` is the module's own evaluation metric — unresolved critical questions at
 the moment a phase handed off. Recorded per phase so the trend across phases is real data.
 
+## decisions.md line format
+
+`decisions.md` is append-only prose, but it is also parsed — `fdw-status` reads it for the activity
+feed — so the line shape is part of the contract, not a style choice:
+
+```
+- YYYY-MM-DD · <type> · <what happened> · source: <source_id>
+```
+
+`<type>` is `decision`, `event`, or `deferred`. The ` · ` separator is a middle dot with single
+spaces. A line that does not match still renders in the activity feed, just without a date, so a
+hand-written note is degraded rather than lost.
+
 ## Write discipline
 
 - Any skill that writes a feature folder updates the registry in the same run.
