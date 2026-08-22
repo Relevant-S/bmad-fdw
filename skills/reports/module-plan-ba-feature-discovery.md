@@ -667,24 +667,26 @@ The prototypes themselves are a fifth surface but are a work product of `fdw-des
 
 Beyond collecting the config table, `fdw-setup` must:
 
-1. **Scaffold the state store** — create `{discovery_folder}/` with `registry.json` (empty but schema-valid),
+1. **Install the shared state CLI** to `{project-root}/_bmad/fdw/scripts/fdw_state.py` — every skill
+   calls it there and none bundles a copy.
+2. **Scaffold the state store** — create `{discovery_folder}/` with `registry.json` (empty but schema-valid),
    `decisions.md`, `questions.md`, `glossary.md`, `as-built.md`, `sources/index.json`, and `phases/`.
    A half-created store is worse than none; this must be atomic and idempotent.
-2. **Initialize phase 1** by calling `fdw-phase` — first init scopes phase 1, per requirement 3.
-3. **Detect the prototype environment** — find the component library, infer the stack from the repo,
+3. **Initialize phase 1** by calling `fdw-phase` — first init scopes phase 1, per requirement 3.
+4. **Detect the prototype environment** — find the component library, infer the stack from the repo,
    populate `prototype_stack` and `component_library_path` so the BA doesn't have to answer questions the
    repo can answer.
-4. **Verify dependencies** — `bmad-prd` present, Node available, Figma MCP responding if `figma_enabled`.
+5. **Verify dependencies** — `bmad-prd` present, Node available, Figma MCP responding if `figma_enabled`.
    Report what's missing without blocking setup.
-5. **Seed the glossary** from the project name and any existing PRD or README found in the repo, so the very
+6. **Seed the glossary** from the project name and any existing PRD or README found in the repo, so the very
    first intake has terminology to anchor to.
-6. **Clean up the aborted attempt** — remove the eight broken `fdw-*` symlinks in `.claude/skills/` and the
-   empty `_bmad/fdw/scripts/tests/` tree left by the earlier run, if present. Idempotent, and a no-op on a
-   clean install.
-7. **Offer a first-run walkthrough** — "point me at your first document and I'll run intake" is a far better
+7. **Remove broken `fdw-*` symlinks** in `.claude/skills/` only — links whose target does not resolve.
+   **Never touch `_bmad/fdw/`**: that path held leftovers from the aborted attempt when this plan was
+   written, but it is now where the shared state CLI lives. Deleting it would remove the module's own code.
+8. **Offer a first-run walkthrough** — "point me at your first document and I'll run intake" is a far better
    ending to setup than "configuration saved."
 
-Item 6 is specific to this repo; keep it guarded so it never fires destructively elsewhere.
+Item 7 is specific to this repo; keep it guarded so it never fires destructively elsewhere.
 
 ## Integration
 
@@ -871,6 +873,26 @@ and dates in precisely the files where that is most dangerous. All prose files a
 markdown. The canonical contract now lives at `skills/fdw-intake/assets/state-contract.md` and is copied
 into every store as `CONTRACT.md` at init, so the state store describes itself. Build the remaining
 eight skills against that file.
+
+### Contract amendment made during the fdw-design build (2026-08-22)
+
+The shared state CLI moved out of `fdw-intake` to **`{project-root}/_bmad/fdw/scripts/fdw_state.py`**,
+mirroring how BMad ships `memlog.py` at `_bmad/scripts/`. `fdw-design` was the first skill besides
+intake that had to write to the store; leaving the script inside one skill would have made it a
+cross-skill path dependency in three more places by skill six. Every fdw skill now calls
+`{state-cli}` and bundles no copy. `_bmad/fdw` is un-ignored in git so the module payload is
+version controlled, and installing it is a `fdw-setup` responsibility.
+
+The CLI gained **`feature-set`**, which every downstream skill uses to advance a feature. The
+lifecycle gates are enforced there: a forward move cannot skip a stage (`sliced → spec-approved` is
+refused and names the stage that has to happen first), backward moves are always allowed because
+rework is normal, and `--force` lands in `decisions.md` as an override.
+
+`design/ux-notes.md` is a **contract, not scratch**. `fdw-elaborate` reads it as its primary input
+without opening the prototype, so it carries numbered screens `S1..Sn`, assumptions `A1..An` tied to
+screens, and an append-only dated corrections log. `design/empty-state.md` carries gaps `G1..Gn`.
+The spec cites those ids, which is what makes a requirement traceable back to the screen that
+produced it.
 
 ### Housekeeping found in the repo
 

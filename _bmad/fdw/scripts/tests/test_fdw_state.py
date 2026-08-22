@@ -482,3 +482,72 @@ def test_normalize_names_the_plan_path_and_apply_clears_the_scratch(tmp_path, ro
     assert (pending / f"{source['source_id']}.source.json").exists()
     run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, plan_for(source)))
     assert not list(pending.glob(f"{source['source_id']}.*"))
+
+
+# ---------------------------------------------------------------- feature-set gates
+
+
+@pytest.fixture
+def one_feature(tmp_path, root, source):
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, plan_for(source)))
+    return "F-001"
+
+
+def test_advancing_one_stage_at_a_time_is_allowed(root, one_feature):
+    out = run("feature-set", "--root", str(root), "--id", one_feature, "--status", "designing")
+    assert out["status"] == "designing"
+    registry = json.loads((root / "registry.json").read_text())
+    assert registry["features"][0]["status"] == "designing"
+    record = json.loads((root / "phases/phase-1/features/F-001-session-management/feature.json").read_text())
+    assert record["status"] == "designing"
+
+
+def test_skipping_a_gate_is_refused_and_names_the_missing_stage(root, one_feature):
+    payload = run("feature-set", "--root", str(root), "--id", one_feature,
+                  "--status", "spec-approved", expect_ok=False)
+    joined = " ".join(payload["errors"])
+    assert "skips" in joined and "designing" in joined
+
+
+def test_a_forced_skip_is_allowed_but_logged_as_an_override(root, one_feature):
+    run("feature-set", "--root", str(root), "--id", one_feature, "--status", "spec-approved",
+        "--force", "--note", "specced offline during the workshop")
+    assert json.loads((root / "registry.json").read_text())["features"][0]["status"] == "spec-approved"
+    decisions = (root / "decisions.md").read_text()
+    assert "override" in decisions and "skipping" in decisions
+
+
+def test_going_backwards_is_always_allowed(root, one_feature):
+    run("feature-set", "--root", str(root), "--id", one_feature, "--status", "designing")
+    run("feature-set", "--root", str(root), "--id", one_feature, "--status", "client-review")
+    out = run("feature-set", "--root", str(root), "--id", one_feature, "--status", "designing")
+    assert out["status"] == "designing"
+    assert "override" not in (root / "decisions.md").read_text()
+
+
+def test_size_flags_and_dependencies_update_both_files(tmp_path, root, source, one_feature):
+    second = plan_for(source)
+    second["new_features"][0].update({"title": "Room booking", "slug": "room-booking"})
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, second, "p2.json"))
+    out = run("feature-set", "--root", str(root), "--id", "F-002", "--size", "XL",
+              "--add-flag", "changed", "--depends-on", "F-001", "--note", "blocked on sessions")
+    assert "size None → XL" in out["changed"]
+    registry = {f["id"]: f for f in json.loads((root / "registry.json").read_text())["features"]}
+    assert registry["F-002"]["size"] == "XL"
+    assert registry["F-002"]["depends_on"] == ["F-001"]
+    assert "changed" in registry["F-002"]["flags"]
+    assert "blocked on sessions" in (root / "decisions.md").read_text()
+
+
+def test_unknown_flag_and_self_dependency_are_refused(root, one_feature):
+    assert any("not a known flag" in e for e in
+               run("feature-set", "--root", str(root), "--id", one_feature,
+                   "--add-flag", "urgent", expect_ok=False)["errors"])
+    assert any("cannot depend on itself" in e for e in
+               run("feature-set", "--root", str(root), "--id", one_feature,
+                   "--depends-on", one_feature, expect_ok=False)["errors"])
+
+
+def test_unknown_feature_lists_what_exists(root, one_feature):
+    payload = run("feature-set", "--root", str(root), "--id", "F-404", "--status", "designing", expect_ok=False)
+    assert "F-001" in payload["errors"][0]

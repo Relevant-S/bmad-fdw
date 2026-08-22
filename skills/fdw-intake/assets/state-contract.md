@@ -1,8 +1,15 @@
 # fdw Discovery State Contract v1
 
 The shared data contract for the fdw (Feature Discovery Workflow) module. Every fdw skill reads and
-writes the store through `fdw_state.py`, never by hand-editing JSON. `fdw-intake` owns this file;
-`fdw_state.py init` copies it into the store as `CONTRACT.md` so the store describes itself.
+writes the store through the module-shared state CLI, never by hand-editing JSON:
+
+```
+uv run {project-root}/_bmad/fdw/scripts/fdw_state.py <command> --root {discovery_folder}
+```
+
+Commands: `init`, `normalize`, `context`, `validate-plan`, `apply-plan`, `record-empty`,
+`feature-set`, `validate`. It is the only writer; skills bundle no copy of it. `fdw-intake` owns
+this contract file, and `init` copies it into the store as `CONTRACT.md` so the store describes itself.
 
 ## Layout
 
@@ -108,6 +115,11 @@ Gates that hold across the module:
   input. A contradiction opens a change record instead. `fdw_state.py` enforces this — a
   contradiction against a locked feature fails validation unless routed as `change-record`.
 - No skill advances a status it did not do the work for.
+
+`feature-set` enforces the gates: a forward move may not skip a stage, so `sliced → spec-approved`
+is refused and names the stage that has to happen first. Backward moves are always allowed, because
+rework is normal and a tool that pretends otherwise makes skills lie about where things stand. A
+skipped gate is possible with `--force` and lands in `decisions.md` as an override.
 
 ## Provenance anchors
 

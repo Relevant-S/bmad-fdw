@@ -47,6 +47,15 @@ SIZES = ["XS", "S", "M", "L", "XL"]
 # change record instead. This is the sandbox rule, enforced here rather than trusted to prose.
 SPEC_LOCKED = {"spec-approved", "handed-off", "shipped"}
 
+# The contract ships with fdw-intake, which owns it. This script is module-shared, so it
+# looks in both the installed and the in-repo location rather than assuming one layout.
+_HERE = Path(__file__).resolve()
+CONTRACT_SEARCH = [
+    _HERE.parent.parent / "assets" / "state-contract.md",
+    _HERE.parents[3] / "skills" / "fdw-intake" / "assets" / "state-contract.md",
+    _HERE.parents[2] / "skills" / "fdw-intake" / "assets" / "state-contract.md",
+]
+
 ANCHOR_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*#(?:t=\d{1,2}:\d{2}(?::\d{2})?|L=\d+(?:-\d+)?|p=\d+|s=[a-z0-9-]+)$")
 
 
@@ -200,8 +209,11 @@ def cmd_init(args: argparse.Namespace) -> None:
             registry.setdefault("phases", []).append(phase)
             write_json_atomic(paths["registry"], registry)
 
-    contract_src = Path(__file__).resolve().parent.parent / "assets" / "state-contract.md"
-    if contract_src.exists() and not paths["contract"].exists():
+    contract_src = next(
+        (c for c in CONTRACT_SEARCH if c.exists()),
+        None,
+    )
+    if contract_src and not paths["contract"].exists():
         shutil.copyfile(contract_src, paths["contract"])
         created.append(str(paths["contract"]))
 
@@ -892,6 +904,89 @@ def cmd_record_empty(args: argparse.Namespace) -> None:
     emit({"recorded": args.source_id, "outcome": "no-new-signal"})
 
 
+# ---------------------------------------------------------------- feature updates
+
+
+def cmd_feature_set(args: argparse.Namespace) -> None:
+    """Advance or amend one feature. Forward moves may not skip a gate; backward moves are
+    always allowed, because rework is normal and pretending otherwise makes skills lie."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    registry = read_json(paths["registry"], empty_registry())
+    entry = next((f for f in registry.get("features", []) if f["id"] == args.id), None)
+    if entry is None:
+        die([f"No feature '{args.id}' in the registry. Known: {[f['id'] for f in registry.get('features', [])]}"])
+
+    fdir = _feature_dir(root, entry)
+    record = read_json(fdir / "feature.json")
+    if record is None:
+        die([f"{args.id}: {fdir.relative_to(root)}/feature.json is missing. Run: fdw_state.py validate --root {root}"])
+
+    stamp = today()
+    changes: list[str] = []
+
+    if args.status and args.status != entry["status"]:
+        if args.status not in LIFECYCLE:
+            die([f"'{args.status}' is not a lifecycle stage. Stages: {LIFECYCLE}"])
+        here, there = LIFECYCLE.index(entry["status"]), LIFECYCLE.index(args.status)
+        if there > here + 1 and not args.force:
+            skipped = LIFECYCLE[here + 1:there]
+            die([
+                f"{args.id}: moving {entry['status']} → {args.status} skips {skipped}. "
+                f"Each stage is a gate — {LIFECYCLE[here + 1]} has to happen first. "
+                f"Pass --force only if the skipped work genuinely happened elsewhere; it is logged as an override."
+            ])
+        if there > here + 1:
+            append_md(
+                paths["decisions"],
+                f"- {stamp} · override · {args.id} forced {entry['status']} → {args.status}, "
+                f"skipping {LIFECYCLE[here + 1:there]} · {args.note or 'no reason given'}",
+            )
+        changes.append(f"status {entry['status']} → {args.status}")
+        entry["status"] = record["status"] = args.status
+
+    if args.size:
+        if args.size not in SIZES:
+            die([f"size must be one of {SIZES}."])
+        changes.append(f"size {entry.get('size')} → {args.size}")
+        entry["size"] = record["size"] = args.size
+
+    for flag in args.add_flag or []:
+        if flag not in FLAGS:
+            die([f"'{flag}' is not a known flag. Known: {FLAGS}"])
+        for target in (entry, record):
+            if flag not in target.setdefault("flags", []):
+                target["flags"].append(flag)
+        changes.append(f"+flag {flag}")
+
+    for flag in args.remove_flag or []:
+        for target in (entry, record):
+            if flag in target.get("flags", []):
+                target["flags"].remove(flag)
+        changes.append(f"-flag {flag}")
+
+    for dep in args.depends_on or []:
+        if dep == args.id:
+            die([f"{args.id} cannot depend on itself."])
+        if dep not in {f["id"] for f in registry.get("features", [])}:
+            die([f"depends_on '{dep}' is not a feature in the registry."])
+        for target in (entry, record):
+            if dep not in target.setdefault("depends_on", []):
+                target["depends_on"].append(dep)
+        changes.append(f"depends_on +{dep}")
+
+    if not changes:
+        emit({"id": args.id, "changed": [], "status": entry["status"], "note": "nothing to do"})
+        return
+
+    entry["updated"] = record["updated"] = stamp
+    write_json_atomic(fdir / "feature.json", record)
+    write_json_atomic(paths["registry"], registry)
+    if args.note:
+        append_md(paths["decisions"], f"- {stamp} · decision · {args.id}: {args.note} · source: {args.by or 'fdw'}")
+    emit({"id": args.id, "changed": changes, "status": entry["status"], "flags": entry.get("flags", [])})
+
+
 # ---------------------------------------------------------------- store integrity
 
 
@@ -1000,6 +1095,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--source-id", required=True, dest="source_id")
     p.add_argument("--reason", default=None)
     p.set_defaults(func=cmd_record_empty)
+
+    p = sub.add_parser("feature-set", help="advance or amend one feature; forward moves cannot skip a gate")
+    p.add_argument("--root", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--status", default=None)
+    p.add_argument("--size", default=None)
+    p.add_argument("--add-flag", action="append", dest="add_flag")
+    p.add_argument("--remove-flag", action="append", dest="remove_flag")
+    p.add_argument("--depends-on", action="append", dest="depends_on")
+    p.add_argument("--note", default=None, help="one line for decisions.md")
+    p.add_argument("--by", default=None, help="which skill made the change")
+    p.add_argument("--force", action="store_true", help="allow a forward move that skips a gate; logged as an override")
+    p.set_defaults(func=cmd_feature_set)
 
     p = sub.add_parser("validate", help="check the registry and the feature folders still agree")
     p.add_argument("--root", required=True)

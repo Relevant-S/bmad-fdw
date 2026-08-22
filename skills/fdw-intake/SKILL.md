@@ -13,18 +13,19 @@ Act as the business analyst's intake desk on an outsourcing engagement: the BA b
 
 - Bare paths and `{skill-root}` (e.g. `assets/state-contract.md`) resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
+- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py`, the module-shared state CLI. Every fdw skill calls it there and bundles no copy; it is the only thing that writes to the store.
 
 ## On Activation
 
 1. Load config from `{project-root}/_bmad/config.toml` and `config.user.toml` (via `uv run {project-root}/_bmad/scripts/resolve_config.py --project-root {project-root}`). Resolve `{communication_language}`, `{output_folder}`, and `{discovery_folder}` — the last defaults to `{output_folder}/discovery` when unset.
-2. Ensure the store exists: `uv run {skill-root}/scripts/fdw_state.py init --root {discovery_folder}`. Idempotent, so run it every time rather than checking first.
+2. Ensure the store exists: `{state-cli} init --root {discovery_folder}`. Idempotent, so run it every time rather than checking first.
 3. Route on intent. Files or paths to ingest → **Ingest**. "Is the store OK", "check consistency", no input offered → **Validate**.
 
 ## Ingest
 
 Work one source at a time through normalize → plan → apply, but confirm the whole batch with the BA once. Several sources in one run is normal — the BA catches up on three calls at once — and dedupe must consider the batch as well as the store, or two calls about the same feature create two features.
 
-**Normalize.** `fdw_state.py normalize --root {discovery_folder} --file <path> --title "<what this is>" [--date YYYY-MM-DD]`. It writes anchored markdown into `sources/`, hashes the input, records the source block, and reports near-matches. It returns `plan_path` — write your plan there, so a compacted session finds its own work instead of starting the source over. Normalization is structural, never translation — the source keeps its original language because a translated quote is not evidence.
+**Normalize.** `{state-cli} normalize --root {discovery_folder} --file <path> --title "<what this is>" [--date YYYY-MM-DD]`. It writes anchored markdown into `sources/`, hashes the input, records the source block, and reports near-matches. It returns `plan_path` — write your plan there, so a compacted session finds its own work instead of starting the source over. Normalization is structural, never translation — the source keeps its original language because a translated quote is not evidence.
 
 - `already_ingested: true` → this exact file is already in. Say so and stop; do not re-ingest.
 - `matches` with `relation: "near"` → almost certainly a corrected re-export. Ask the BA: supersede the earlier source (set `source.supersedes`, re-anchor evidence, create nothing new) or treat it as genuinely new. Getting this wrong duplicates every feature in the file.
@@ -32,7 +33,7 @@ Work one source at a time through normalize → plan → apply, but confirm the 
 
 **Read the source through a subagent.** Never pull a large source into your own context. Dispatch extraction and have the subagent return only structured findings with anchors and verbatim quotes. Note the path for scanning; do not read it now. With no subagents available, read the normalized source in anchored chunks and write each feature's signal to the plan as you go, so a long source never sits in context whole.
 
-**Build the picture.** `fdw_state.py context --root {discovery_folder}` returns existing features with their aliases and summaries, every open question, the glossary, the current phase, and the next feature id. That is your dedupe, merge, and question-closing input — work from it rather than reading feature folders.
+**Build the picture.** `{state-cli} context --root {discovery_folder}` returns existing features with their aliases and summaries, every open question, the glossary, the current phase, and the next feature id. That is your dedupe, merge, and question-closing input — work from it rather than reading feature folders.
 
 **Slice.** Decide the grain yourself; the BA values not being asked. A feature is an independently deliverable functional slice — something that could be designed, specced, and built without its siblings. A big capability discussed as one thing ("Sessions") usually is three; a passing remark usually is not a feature at all. Judgment worth applying: reuse the grain already in the registry so the set stays comparable, keep a slice that is 90% a repeat of an existing feature separate rather than merged when the two ship in different phases, and note the dependency instead.
 
@@ -41,7 +42,7 @@ Work one source at a time through normalize → plan → apply, but confirm the 
 **Write the plan.** Match `assets/intake-plan.example.json` and write it to the `plan_path` normalize returned. Its `source` block needs only `source_id` — the hash, path and sample are looked up from what normalize recorded, and a hand-copied hash is rejected. Then:
 
 ```
-uv run {skill-root}/scripts/fdw_state.py validate-plan --root {discovery_folder} --plan <plan.json>
+{state-cli} validate-plan --root {discovery_folder} --plan <plan.json>
 ```
 
 Validation errors name their own fix; read and apply them rather than guessing. Nothing is written until the plan validates.
@@ -52,13 +53,13 @@ Validation errors name their own fix; read and apply them rather than guessing. 
 
 ## Validate
 
-`fdw_state.py validate --root {discovery_folder}` checks that the registry and the feature folders still agree and that open-question counts are current. Report the problems as it names them; each one states its own fix. This is store integrity only — cross-feature contradictions and overlaps belong to `fdw-consistency`, so route there instead of duplicating that work here.
+`{state-cli} validate --root {discovery_folder}` checks that the registry and the feature folders still agree and that open-question counts are current. Report the problems as it names them; each one states its own fix. This is store integrity only — cross-feature contradictions and overlaps belong to `fdw-consistency`, so route there instead of duplicating that work here.
 
 ## Rules with consequences
 
 - **Provenance or it does not exist.** Every signal entry needs `text`, `anchor`, and a verbatim `quote`. `validate-plan` rejects the plan otherwise, so do not try to work around it — go find the quote, or drop the requirement.
 - **Never write `spec.md`.** A source that contradicts a `spec-approved` or later feature opens a change record (`route: "change-record"`), which `fdw-elaborate` resolves. The spec is a sandbox that only its owner edits; that isolation is the reason it exists.
-- **A source with nothing new is a real outcome.** Status calls happen. Record it with `fdw_state.py record-empty --root {discovery_folder} --source-id … --reason "…"` and say so. Never invent features to justify a run.
+- **A source with nothing new is a real outcome.** Status calls happen. Record it with `{state-cli} record-empty --root {discovery_folder} --source-id … --reason "…"` and say so. Never invent features to justify a run.
 - **Contradiction detection here is narrow** — incoming source against existing state, nothing more. The full cross-feature audit is `fdw-consistency`.
 
 ## Headless

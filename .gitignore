@@ -1,6 +1,7 @@
 node_modules
 .serena
-_bmad
+_bmad/*
+!_bmad/fdw
 _bmad-output
 docs
 .claude
