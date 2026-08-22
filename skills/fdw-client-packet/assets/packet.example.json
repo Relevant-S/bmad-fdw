@@ -1,0 +1,51 @@
+{
+  "_comment": "Client review packet content. Everything here is rendered and read by the client, so it is written in their language — no feature ids, no assumption ids, no sizing, no delivery jargon. The render command refuses if any of that leaks. `_comment` keys are ignored.",
+
+  "headline": "Academy — what we're proposing",
+
+  "intro": "Following our call on 22 August, here's how we think Academy should work. Nothing is built yet — these are proposed screens, so this is the cheapest moment to tell us we've got something wrong. There are four questions at the end we need answered before we can start.",
+
+  "sections": [
+    {
+      "_comment": "One per screen. `screen` is the client-facing screen name and is also the key used by --screenshot to attach an image.",
+      "screen": "Course list",
+      "what_you_see": "Every course your organisation offers, newest first, with the number of enrolled learners against each one.",
+      "how_it_works": "Before any courses exist, this page invites you to create the first one rather than showing an empty table. Selecting a course opens it."
+    },
+    {
+      "screen": "Course page",
+      "what_you_see": "A course opens on three tabs: Overview, Sessions and Certification.",
+      "how_it_works": "Sessions are the individual dates learners attend. Certification shows what a learner earns once they have completed them. Each tab grows to fit its content, so long agendas stay readable."
+    }
+  ],
+
+  "assumptions": [
+    {
+      "_comment": "Written as a statement the client can agree or disagree with. Never carry the internal id or the word 'unconfirmed' across.",
+      "we_assumed": "A course can be published before any sessions have been scheduled.",
+      "why_it_matters": "If it can't, we'll hide the publish action until at least one session exists — which changes how you'd set a course up."
+    },
+    {
+      "we_assumed": "Certification only becomes available once a learner has attended every session.",
+      "why_it_matters": "If partial completion should still certify, the rules are different and we'd want to get them right now."
+    }
+  ],
+
+  "questions": [
+    {
+      "_comment": "`ref` is the internal question id. It is written to the sidecar map so answers can be recorded against the right question, and it is never rendered into the page.",
+      "ref": "F-001-Q-02",
+      "question": "What should each tab on a course page contain?",
+      "context": "We've proposed Overview, Sessions and Certification. If your team thinks about courses differently, now is the time to say so."
+    },
+    {
+      "ref": "F-001-Q-01",
+      "question": "Which parts of Events should Academy work exactly like, and which should behave differently?",
+      "context": "The two are close enough that reusing Events saves real time — but only where the behaviour genuinely matches."
+    }
+  ],
+
+  "next_steps": "Have a look through and send us anything that reads wrong, however small. Once you're happy with the screens and we have answers to the questions above, we'll write these up in detail and start building.",
+
+  "how_to_view": "The clickable version runs locally — ask us for a walkthrough if you'd rather see it moving than read about it."
+}

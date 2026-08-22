@@ -551,3 +551,34 @@ def test_unknown_flag_and_self_dependency_are_refused(root, one_feature):
 def test_unknown_feature_lists_what_exists(root, one_feature):
     payload = run("feature-set", "--root", str(root), "--id", "F-404", "--status", "designing", expect_ok=False)
     assert "F-001" in payload["errors"][0]
+
+
+# ---------------------------------------------------------------- question-close (non-document answers)
+
+
+def test_question_close_records_answer_and_source(root, one_feature):
+    run("question-close", "--root", str(root), "--question-id", "F-001-Q-01",
+        "--answer", "No, sessions cannot overlap.", "--source", "client review packet 2026-03-01",
+        "--quote", "One room, one session at a time.")
+    record = json.loads((root / "phases/phase-1/features/F-001-session-management/feature.json").read_text())
+    q = record["questions"][0]
+    assert q["status"] == "resolved"
+    assert q["answer_source"] == "client review packet 2026-03-01"
+    assert q["answer_quote"] == "One room, one session at a time."
+    assert json.loads((root / "registry.json").read_text())["features"][0]["open_questions"]["critical"] == 0
+    assert "F-001-Q-01 answered" in (root / "decisions.md").read_text()
+
+
+def test_question_close_works_without_a_quote(root, one_feature):
+    run("question-close", "--root", str(root), "--question-id", "F-001-Q-01",
+        "--answer", "Confirmed on the call.", "--source", "client sign-off")
+    record = json.loads((root / "phases/phase-1/features/F-001-session-management/feature.json").read_text())
+    assert record["questions"][0]["status"] == "resolved"
+
+
+def test_closing_an_already_closed_question_is_refused(root, one_feature):
+    run("question-close", "--root", str(root), "--question-id", "F-001-Q-01",
+        "--answer", "yes", "--source", "client")
+    payload = run("question-close", "--root", str(root), "--question-id", "F-001-Q-01",
+                  "--answer", "yes again", "--source", "client", expect_ok=False)
+    assert "not an open question" in payload["errors"][0]

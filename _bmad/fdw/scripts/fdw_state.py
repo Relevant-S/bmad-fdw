@@ -987,6 +987,46 @@ def cmd_feature_set(args: argparse.Namespace) -> None:
     emit({"id": args.id, "changed": changes, "status": entry["status"], "flags": entry.get("flags", [])})
 
 
+def cmd_question_close(args: argparse.Namespace) -> None:
+    """Close one question outside an ingest run. Client sign-off and inline feedback are real
+    answers but have no anchored document, so this path takes a named source instead of an
+    anchor. Answers that arrive as a document should go through intake, which anchors them."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    registry = read_json(paths["registry"], empty_registry())
+    open_lookup = {q["id"]: q for q in _open_questions(root, registry)}
+    if args.question_id not in open_lookup:
+        die([
+            f"'{args.question_id}' is not an open question. Open ids: {sorted(open_lookup)[:12]}"
+        ])
+    fid = open_lookup[args.question_id]["feature_id"]
+    entry = next(f for f in registry["features"] if f["id"] == fid)
+    fdir = _feature_dir(root, entry)
+    record = read_json(fdir / "feature.json", {})
+    stamp = today()
+    for question in record.get("questions", []):
+        if question["id"] == args.question_id:
+            question.update({
+                "status": "resolved",
+                "answer": args.answer,
+                "answer_source": args.source,
+                "resolved": stamp,
+            })
+            if args.quote:
+                question["answer_quote"] = args.quote
+            counts = entry["open_questions"]
+            counts[question["criticality"]] = max(0, counts.get(question["criticality"], 0) - 1)
+    record["updated"] = entry["updated"] = stamp
+    write_json_atomic(fdir / "feature.json", record)
+    write_json_atomic(paths["registry"], registry)
+    append_md(
+        paths["decisions"],
+        f"- {stamp} · decision · {args.question_id} answered: {args.answer} · source: {args.source}",
+    )
+    emit({"question_id": args.question_id, "feature_id": fid, "status": "resolved",
+          "open_questions": entry["open_questions"]})
+
+
 # ---------------------------------------------------------------- store integrity
 
 
@@ -1108,6 +1148,14 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--by", default=None, help="which skill made the change")
     p.add_argument("--force", action="store_true", help="allow a forward move that skips a gate; logged as an override")
     p.set_defaults(func=cmd_feature_set)
+
+    p = sub.add_parser("question-close", help="close one question from client feedback or sign-off")
+    p.add_argument("--root", required=True)
+    p.add_argument("--question-id", required=True, dest="question_id")
+    p.add_argument("--answer", required=True)
+    p.add_argument("--source", required=True, help="where the answer came from, e.g. a packet id or 'client email 2026-08-25'")
+    p.add_argument("--quote", default=None, help="the client's own words, when you have them")
+    p.set_defaults(func=cmd_question_close)
 
     p = sub.add_parser("validate", help="check the registry and the feature folders still agree")
     p.add_argument("--root", required=True)
