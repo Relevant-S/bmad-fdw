@@ -264,3 +264,10 @@ def test_running_the_dashboard_never_writes_to_the_store(tmp_path, store):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_digest_does_not_label_a_multi_phase_count_with_one_phase(store):
+    """Naming the current phase while counting every phase misstates where the work is."""
+    digest = run("--root", str(store))["digest"]
+    assert digest.startswith("2 phases (current phase-1)")
+    assert run("--root", str(store), "--phase", "phase-1")["digest"].startswith("phase-1:")

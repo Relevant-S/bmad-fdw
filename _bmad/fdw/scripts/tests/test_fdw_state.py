@@ -602,3 +602,122 @@ def test_self_overlap_is_refused(root, one_feature):
     payload = run("feature-set", "--root", str(root), "--id", one_feature,
                   "--overlaps", one_feature, expect_ok=False)
     assert "cannot overlap itself" in payload["errors"][0]
+
+
+# ---------------------------------------------------------------- phases
+
+
+@pytest.fixture
+def two_features(tmp_path, root, source):
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, plan_for(source)))
+    second = plan_for(source)
+    second["new_features"][0].update({"title": "Academy", "slug": "academy"})
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, second, "p2.json"))
+    return root
+
+
+def test_phase_open_carries_forward_what_the_last_phase_left(root, two_features):
+    run("feature-set", "--root", str(root), "--id", "F-002", "--add-flag", "deferred")
+    out = run("phase-open", "--root", str(root), "--phase", "phase-2", "--from", "phase-1",
+              "--exit-criterion", "Every feature spec-approved")
+    carried = out["carried_over"]
+    assert carried["from"] == "phase-1"
+    assert {q["feature"] for q in carried["questions"]} == {"F-001", "F-002"}
+    assert [f["id"] for f in carried["features"]] == ["F-002"]
+    assert out["current_phase"] == "phase-2"
+    record = json.loads((root / "phases/phase-2/phase.json").read_text())
+    assert record["exit_criteria"] == ["Every feature spec-approved"]
+
+
+def test_phase_open_carries_open_change_records(root, two_features):
+    fdir = root / "phases/phase-1/features/F-001-session-management"
+    (fdir / "changes.md").write_text("\n## 2026-01-01 — change\n\n- resolution: OPEN — route through fdw-elaborate.\n")
+    out = run("phase-open", "--root", str(root), "--phase", "phase-2", "--from", "phase-1")
+    assert out["carried_over"]["changes"] == ["F-001"]
+
+
+def test_a_second_phase_cannot_be_opened_twice(root, two_features):
+    run("phase-open", "--root", str(root), "--phase", "phase-2")
+    assert "already exists" in run("phase-open", "--root", str(root), "--phase", "phase-2",
+                                   expect_ok=False)["errors"][0]
+
+
+def test_moving_a_feature_keeps_its_id_and_everything_under_it(root, two_features):
+    run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    old_dir = root / "phases/phase-1/features/F-002-academy"
+    (old_dir / "spec.md").write_text("# Academy spec\n")
+    out = run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2",
+              "--reason", "client deferred it")
+    assert out["moved"] is True and "deferred" in out["flags"]
+    new_dir = root / "phases/phase-2/features/F-002-academy"
+    assert not old_dir.exists()
+    assert (new_dir / "spec.md").read_text() == "# Academy spec\n"
+    assert (new_dir / "signal.md").exists(), "accumulated evidence travels with the feature"
+    registry = {f["id"]: f for f in json.loads((root / "registry.json").read_text())["features"]}
+    assert registry["F-002"]["phase"] == "phase-2"
+    assert json.loads((new_dir / "feature.json").read_text())["phase"] == "phase-2"
+    assert json.loads((root / "phases/phase-2/phase.json").read_text())["features"] == ["F-002"]
+    assert json.loads((root / "phases/phase-1/phase.json").read_text())["features"] == ["F-001"]
+
+
+def test_moving_back_clears_the_deferred_flag(root, two_features):
+    run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2")
+    out = run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-1")
+    assert "deferred" not in out["flags"]
+
+
+def test_a_move_that_would_strand_a_dependency_is_refused(root, two_features):
+    run("feature-set", "--root", str(root), "--id", "F-001", "--depends-on", "F-002")
+    run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    payload = run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2", expect_ok=False)
+    joined = " ".join(payload["errors"])
+    assert "F-001 depends on F-002" in joined or "depends on F-002" in joined
+    assert "--force" in joined
+
+
+def test_a_stranding_move_can_be_forced_and_is_recorded(root, two_features):
+    run("feature-set", "--root", str(root), "--id", "F-001", "--depends-on", "F-002")
+    run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    out = run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2", "--force")
+    assert out["violations_accepted"]
+
+
+def test_closing_a_phase_with_unfinished_work_is_refused_and_names_it(root, two_features):
+    payload = run("phase-close", "--root", str(root), "--phase", "phase-1", expect_ok=False)
+    joined = " ".join(payload["errors"])
+    assert "F-001" in joined and "F-002" in joined
+    assert "defer them" in joined
+
+
+def test_closing_records_the_blocker_count_which_is_the_modules_own_metric(root, two_features):
+    for fid in ("F-001", "F-002"):
+        for stage in ("designing", "client-review", "design-approved", "speccing",
+                      "spec-approved", "handed-off"):
+            run("feature-set", "--root", str(root), "--id", fid, "--status", stage)
+    out = run("phase-close", "--root", str(root), "--phase", "phase-1", "--prd-path", "_bmad-output/prd.md")
+    assert out["blocker_count_at_handoff"] == 2, "one open critical question per feature"
+    assert set(out["blockers"]) == {"F-001-Q-01", "F-002-Q-01"}
+    record = json.loads((root / "phases/phase-1/phase.json").read_text())
+    assert record["status"] == "closed" and record["prd_path"] == "_bmad-output/prd.md"
+
+
+def test_a_deferred_feature_does_not_block_the_close(root, two_features):
+    for stage in ("designing", "client-review", "design-approved", "speccing", "spec-approved", "handed-off"):
+        run("feature-set", "--root", str(root), "--id", "F-001", "--status", stage)
+    run("feature-set", "--root", str(root), "--id", "F-002", "--add-flag", "deferred")
+    assert run("phase-close", "--root", str(root), "--phase", "phase-1")["features"] == 2
+
+
+def test_a_closed_phase_cannot_be_closed_again(root, two_features):
+    run("feature-set", "--root", str(root), "--id", "F-001", "--add-flag", "dropped")
+    run("feature-set", "--root", str(root), "--id", "F-002", "--add-flag", "dropped")
+    run("phase-close", "--root", str(root), "--phase", "phase-1")
+    assert "already closed" in run("phase-close", "--root", str(root), "--phase", "phase-1",
+                                   expect_ok=False)["errors"][0]
+
+
+def test_the_store_stays_consistent_across_a_phase_move(root, two_features):
+    run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2")
+    assert run("validate", "--root", str(root))["healthy"] is True

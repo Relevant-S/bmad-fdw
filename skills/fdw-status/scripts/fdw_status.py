@@ -226,8 +226,15 @@ def digest(data: dict[str, Any], derived: dict[str, Any]) -> str:
     by_status: dict[str, int] = {}
     for feature in board:
         by_status[feature["status"]] = by_status.get(feature["status"], 0) + 1
+    # Label honestly: naming the current phase while counting every phase reads as a
+    # per-phase count and quietly misstates where the work is.
+    phases_seen = {f["phase"] for f in board}
+    scope_label = (
+        next(iter(phases_seen)) if len(phases_seen) == 1
+        else f"{len(phases_seen)} phases (current {registry.get('current_phase', 'phase-1')})"
+    )
     parts = [
-        f"{registry.get('current_phase', 'phase-1')}: {len(board)} features — "
+        f"{scope_label}: {len(board)} features — "
         + ", ".join(f"{n} {STATUS_LABEL.get(s, s).lower()}" for s, n in
                     sorted(by_status.items(), key=lambda kv: LIFECYCLE.index(kv[0]) if kv[0] in LIFECYCLE else 99))
     ]

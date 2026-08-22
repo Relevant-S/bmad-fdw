@@ -1049,6 +1049,197 @@ def cmd_question_close(args: argparse.Namespace) -> None:
           "open_questions": entry["open_questions"]})
 
 
+# ---------------------------------------------------------------- phases
+
+
+TERMINAL = {"handed-off", "shipped"}
+
+
+def _phase_file(root: Path, phase: str) -> Path:
+    return store(root)["phases"] / phase / "phase.json"
+
+
+def _phase_features(registry: dict[str, Any], phase: str) -> list[dict[str, Any]]:
+    return [f for f in registry.get("features", []) if f["phase"] == phase]
+
+
+def _critical_open(root: Path, features: list[dict[str, Any]]) -> list[str]:
+    out = []
+    for feature in features:
+        record = read_json(_feature_dir(root, feature) / "feature.json", {})
+        out += [
+            q["id"] for q in record.get("questions", [])
+            if q.get("status", "open") == "open" and q.get("criticality") == "critical"
+        ]
+    return out
+
+
+def cmd_phase_open(args: argparse.Namespace) -> None:
+    """Open a phase, carrying forward everything the previous one did not finish. A phase that
+    starts blank has thrown away the reason half its scope exists."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    registry = read_json(paths["registry"], empty_registry())
+    if _phase_file(root, args.phase).exists():
+        die([f"Phase '{args.phase}' already exists at phases/{args.phase}/phase.json."])
+
+    stamp = today()
+    carried: dict[str, Any] = {"from": args.from_phase, "questions": [], "features": [], "changes": []}
+    if args.from_phase:
+        prior = _phase_file(root, args.from_phase)
+        if not prior.exists():
+            die([f"No phase '{args.from_phase}' to carry from. Known: {registry.get('phases', [])}"])
+        for feature in _phase_features(registry, args.from_phase):
+            fdir = _feature_dir(root, feature)
+            record = read_json(fdir / "feature.json", {})
+            carried["questions"] += [
+                {"id": q["id"], "feature": feature["id"], "criticality": q.get("criticality"),
+                 "owner": q.get("owner"), "text": q.get("text", "")}
+                for q in record.get("questions", []) if q.get("status", "open") == "open"
+            ]
+            if "deferred" in feature.get("flags", []):
+                carried["features"].append({"id": feature["id"], "title": feature["title"]})
+            changes = fdir / "changes.md"
+            if changes.exists() and "resolution: OPEN" in changes.read_text(encoding="utf-8"):
+                carried["changes"].append(feature["id"])
+
+    (paths["phases"] / args.phase / "features").mkdir(parents=True, exist_ok=True)
+    write_json_atomic(_phase_file(root, args.phase), {
+        "contract_version": CONTRACT_VERSION,
+        "phase": args.phase, "status": "open", "opened": stamp, "closed": None,
+        "exit_criteria": args.exit_criterion or [],
+        "features": [], "carried_over": carried,
+        "blocker_count_at_handoff": None, "prd_path": None,
+    })
+    if args.phase not in registry.setdefault("phases", []):
+        registry["phases"].append(args.phase)
+    if not args.keep_current:
+        registry["current_phase"] = args.phase
+    write_json_atomic(paths["registry"], registry)
+    append_md(paths["decisions"],
+              f"- {stamp} · event · opened {args.phase}"
+              + (f", carrying {len(carried['questions'])} open question(s) and "
+                 f"{len(carried['features'])} deferred feature(s) from {args.from_phase}"
+                 if args.from_phase else ""))
+    emit({"phase": args.phase, "current_phase": registry["current_phase"], "carried_over": carried})
+
+
+def cmd_phase_move(args: argparse.Namespace) -> None:
+    """Move a feature to another phase. The id and everything under it travel with it —
+    continuity of id across phases is what keeps state consistent."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    registry = read_json(paths["registry"], empty_registry())
+    entry = next((f for f in registry.get("features", []) if f["id"] == args.id), None)
+    if entry is None:
+        die([f"No feature '{args.id}'. Known: {[f['id'] for f in registry.get('features', [])]}"])
+    if not _phase_file(root, args.to).exists():
+        die([f"No phase '{args.to}'. Open it first: fdw_state.py phase-open --root {root} --phase {args.to}"])
+    if entry["phase"] == args.to:
+        emit({"id": args.id, "phase": args.to, "moved": False, "note": "already there"})
+        return
+
+    order = registry.get("phases", [])
+    here = order.index(entry["phase"]) if entry["phase"] in order else 0
+    there = order.index(args.to) if args.to in order else 0
+    by_id = {f["id"]: f for f in registry["features"]}
+    violations = []
+    for dep in entry.get("depends_on", []):
+        target = by_id.get(dep)
+        if target and target["phase"] in order and order.index(target["phase"]) > there:
+            violations.append(f"{args.id} depends on {dep} in {target['phase']}, which would then ship later.")
+    for other in registry["features"]:
+        if args.id in other.get("depends_on", []) and other["phase"] in order:
+            if order.index(other["phase"]) < there:
+                violations.append(f"{other['id']} in {other['phase']} depends on {args.id}, which would then ship later.")
+    if violations and not args.force:
+        die(violations + ["Move the dependency too, drop the edge, or pass --force to accept the break."])
+
+    src = _feature_dir(root, entry)
+    entry["phase"] = args.to
+    dst = _feature_dir(root, entry)
+    if src.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists():
+            die([f"{dst} already exists; refusing to overwrite."])
+        src.rename(dst)
+
+    record = read_json(dst / "feature.json", {})
+    if record:
+        record["phase"] = args.to
+        record["updated"] = today()
+        write_json_atomic(dst / "feature.json", record)
+
+    flags = entry.setdefault("flags", [])
+    if there > here and "deferred" not in flags:
+        flags.append("deferred")
+    elif there < here and "deferred" in flags:
+        flags.remove("deferred")
+    if record:
+        record["flags"] = list(flags)
+        write_json_atomic(dst / "feature.json", record)
+    entry["updated"] = today()
+
+    for phase in {p for p in (order[here] if here < len(order) else None, args.to) if p}:
+        pf = _phase_file(root, phase)
+        precord = read_json(pf, None)
+        if precord is None:
+            continue
+        members = [f["id"] for f in _phase_features(registry, phase)]
+        precord["features"] = members
+        write_json_atomic(pf, precord)
+
+    write_json_atomic(paths["registry"], registry)
+    append_md(paths["decisions"],
+              f"- {today()} · decision · {args.id} moved to {args.to} · {args.reason or 'no reason given'}")
+    emit({"id": args.id, "phase": args.to, "moved": True, "flags": flags,
+          "violations_accepted": violations if args.force else []})
+
+
+def cmd_phase_close(args: argparse.Namespace) -> None:
+    """Close a phase and record what it cost. blocker_count_at_handoff is the module's own
+    evaluation metric, so it is captured here rather than reconstructed later."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    registry = read_json(paths["registry"], empty_registry())
+    pf = _phase_file(root, args.phase)
+    record = read_json(pf)
+    if record is None:
+        die([f"No phase '{args.phase}'. Known: {registry.get('phases', [])}"])
+    if record.get("status") == "closed":
+        die([f"Phase '{args.phase}' is already closed ({record.get('closed')})."])
+
+    members = _phase_features(registry, args.phase)
+    unfinished = [
+        f["id"] for f in members
+        if f["status"] not in TERMINAL and not ({"deferred", "dropped"} & set(f.get("flags", [])))
+    ]
+    if unfinished and not args.force:
+        die([
+            f"Phase '{args.phase}' still has {len(unfinished)} unfinished feature(s): {', '.join(unfinished)}.",
+            "Hand them off, defer them to a later phase, drop them, or pass --force to close anyway.",
+        ])
+
+    blockers = _critical_open(root, members)
+    stamp = today()
+    record.update({
+        "status": "closed", "closed": stamp,
+        "features": [f["id"] for f in members],
+        "blocker_count_at_handoff": len(blockers),
+        "blockers_at_handoff": blockers,
+    })
+    if args.prd_path:
+        record["prd_path"] = args.prd_path
+    write_json_atomic(pf, record)
+    append_md(paths["decisions"],
+              f"- {stamp} · event · closed {args.phase} with {len(members)} feature(s) and "
+              f"{len(blockers)} unresolved critical blocker(s)"
+              + (f"; forced past {len(unfinished)} unfinished" if unfinished else ""))
+    emit({"phase": args.phase, "closed": stamp, "features": len(members),
+          "blocker_count_at_handoff": len(blockers), "blockers": blockers,
+          "forced_past": unfinished if args.force else []})
+
+
 # ---------------------------------------------------------------- store integrity
 
 
@@ -1179,6 +1370,29 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--source", required=True, help="where the answer came from, e.g. a packet id or 'client email 2026-08-25'")
     p.add_argument("--quote", default=None, help="the client's own words, when you have them")
     p.set_defaults(func=cmd_question_close)
+
+    p = sub.add_parser("phase-open", help="open a phase, carrying forward what the last one did not finish")
+    p.add_argument("--root", required=True)
+    p.add_argument("--phase", required=True)
+    p.add_argument("--from", dest="from_phase", default=None, help="phase to carry over from")
+    p.add_argument("--exit-criterion", action="append", dest="exit_criterion")
+    p.add_argument("--keep-current", action="store_true", help="open it without making it the current phase")
+    p.set_defaults(func=cmd_phase_open)
+
+    p = sub.add_parser("phase-move", help="move a feature to another phase, id and history intact")
+    p.add_argument("--root", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--to", required=True)
+    p.add_argument("--reason", default=None)
+    p.add_argument("--force", action="store_true", help="accept a dependency break")
+    p.set_defaults(func=cmd_phase_move)
+
+    p = sub.add_parser("phase-close", help="close a phase and record its blocker count")
+    p.add_argument("--root", required=True)
+    p.add_argument("--phase", required=True)
+    p.add_argument("--prd-path", default=None, dest="prd_path")
+    p.add_argument("--force", action="store_true", help="close with unfinished features")
+    p.set_defaults(func=cmd_phase_close)
 
     p = sub.add_parser("validate", help="check the registry and the feature folders still agree")
     p.add_argument("--root", required=True)
