@@ -922,6 +922,27 @@ rather than after six skills have baked them in.
 | 10 | Module scaffold | **Create Module (CM)** | Generates `fdw-setup` and the module infrastructure. Then hand-add the Setup Extensions listed above. |
 | 11 | Validation | **Validate Module (VM)** | Confirm every skill is registered, entries are accurate, structure is sound. |
 
+### Build status — 2026-08-22
+
+All nine skills are built, tested and symlinked into `.claude/skills/`. 215 tests pass across the
+module. Every skill was evaluated end to end against the real transcript-derived store rather than a
+fixture, and each eval found at least one defect that the unit tests had not.
+
+| # | Skill | Tests | Notes |
+| --- | --- | --- | --- |
+| 1 | `fdw-intake` | shared CLI: 59 | Defines the contract. State CLI later relocated to `_bmad/fdw/scripts/`. |
+| 2 | `fdw-status` | 19 | Read-only by construction. |
+| 3 | `fdw-design` | 18 | Templates rewritten so boilerplate cannot satisfy the gate. |
+| 4 | `fdw-client-packet` | 28 | Vocabulary gate refuses internal terms in a client document. |
+| 5 | `fdw-elaborate` | 22 | Mints stable requirement ids at approval; refuses on open blockers. |
+| 6 | `fdw-consistency` | 22 | Overlap scoring switched to the overlap coefficient. |
+| 7 | `fdw-phase` | 12 | Phase mechanics live in the shared CLI. |
+| 8 | `fdw-handoff` | 27 | Cross-phase dependency lookup fixed during the eval. |
+| 9 | `fdw-agent-ba` | 9 | Memory agent, named Vadim, four internal capabilities. |
+
+**Remaining:** run **Create Module (CM)** to scaffold `fdw-setup` and the module infrastructure, then
+**Validate Module (VM)**. The Setup Extensions section above is the hand-add list for `fdw-setup`.
+
 **Validation milestone — build this test into the process.** After step 5, run the whole chain on the real
 `docs/ba-skills-discussion.json` plus a real client artifact, and check the two things the transcript says
 matter: (a) does the Academy≈Events overlap get detected and correctly ordered, and (b) how many critical
