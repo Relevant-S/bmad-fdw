@@ -1,0 +1,11 @@
+node_modules
+.serena
+_bmad
+_bmad-output
+docs
+.claude
+.pytest_cache
+package.json
+pnpm-lock.yaml
+__pycache__
+.analysis
