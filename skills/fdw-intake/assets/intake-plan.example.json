@@ -1,0 +1,101 @@
+{
+  "_comment": "The intake plan. One per source. Every key except `source` is optional — include only what the source produced. `_comment` keys are ignored by the validator and should be dropped from a real plan.",
+
+  "source": {
+    "_comment": "source_id is the only required field — hash, path, title, date, kind and sample are looked up from what `normalize` recorded, so nothing is transcribed by hand. Set `supersedes` only when this is a corrected re-export of a source already in the index.",
+    "source_id": "2026-08-22-academy-scoping-call",
+    "supersedes": null
+  },
+
+  "granularity": "several-features",
+
+  "new_features": [
+    {
+      "_comment": "One self-contained functional slice. `size` is optional here — fdw-elaborate sets it properly once the spec exists.",
+      "title": "Session scheduling",
+      "slug": "session-scheduling",
+      "phase": "phase-1",
+      "summary": "Create sessions, place them on the agenda, and handle collisions.",
+      "aliases": ["sessions", "сесії"],
+      "size": null,
+      "signal": [
+        {
+          "_comment": "text is English and is what the module will act on. quote is the source's own words, verbatim and untranslated — a translated quote is not evidence. All three fields are required.",
+          "text": "A session carries a start time and is placed on a calendar-style agenda.",
+          "anchor": "2026-08-22-academy-scoping-call#t=28:55",
+          "quote": "Як зафіксовано до цього тайм-тейблу, до календарю, відповідно в тебе кожен блок мав статичну висоту.",
+          "speaker": "Vadim Struk"
+        }
+      ],
+      "questions": [
+        {
+          "text": "Can two sessions occupy the same slot in one room?",
+          "criticality": "critical",
+          "owner": "client"
+        }
+      ]
+    }
+  ],
+
+  "merges": [
+    {
+      "_comment": "The source discussed a feature that already exists. Append evidence rather than creating a duplicate.",
+      "feature_id": "F-004",
+      "aliases_add": ["academy"],
+      "signal": [
+        {
+          "text": "Academy reuses the events agenda almost entirely.",
+          "anchor": "2026-08-22-academy-scoping-call#t=30:50",
+          "quote": "фіча Академі, вона там на 90% повторює функціонал івентів",
+          "speaker": "Vadim Struk"
+        }
+      ],
+      "questions": []
+    }
+  ],
+
+  "contradictions": [
+    {
+      "_comment": "The source conflicts with what an existing feature already says. If that feature is spec-approved or later its spec is locked, and `route` MUST be \"change-record\" — intake never edits an approved spec.",
+      "feature_id": "F-002",
+      "text": "Agenda blocks must size to their content; the earlier fixed-height rule is withdrawn.",
+      "anchor": "2026-08-22-academy-scoping-call#t=29:03",
+      "quote": "І весь контент всередині він зжовувався, розумієш?",
+      "criticality": "critical",
+      "owner": "client",
+      "route": "change-record",
+      "design_invalidated": true
+    }
+  ],
+
+  "question_closures": [
+    {
+      "_comment": "The source answered a question the module was already carrying. The quote must be the words that answered it.",
+      "question_id": "F-002-Q-03",
+      "answer": "Events feedback ships before Academy starts.",
+      "anchor": "2026-08-22-academy-scoping-call#t=31:01",
+      "quote": "логічно мені спочатку реалізувати цей фідбек по івентах, а потім вже на основі нього будувати цей Академі"
+    }
+  ],
+
+  "glossary": [
+    {
+      "_comment": "Canonical term plus the mangled or foreign variants seen in sources. This is what keeps a Ukrainian call, an English WBS and a legacy PRD talking about the same thing.",
+      "term": "spec",
+      "aliases": ["спєка", "спека", "elaboration doc"],
+      "definition": "The per-feature elaboration document produced by fdw-elaborate."
+    }
+  ],
+
+  "deferred": [
+    {
+      "title": "Certification tracking",
+      "phase": "phase-2",
+      "reason": "Client confirmed it is out of scope until Academy ships."
+    }
+  ],
+
+  "decisions": [
+    "Sliced Academy apart from Events despite 90% overlap — they ship in different phases and Academy depends on Events feedback landing first."
+  ]
+}
