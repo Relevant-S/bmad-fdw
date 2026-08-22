@@ -1,0 +1,93 @@
+code: fdw
+name: "Feature Discovery Workflow"
+description: "Turns raw client input — call transcripts, WBS, PRDs, any sales handoff — into design-validated, client-approved feature specs, assembled per delivery phase and handed to bmad-prd."
+module_version: 1.0.0
+default_selected: false
+module_greeting: >
+  Feature Discovery Workflow is installed.
+
+  The method inverts the usual order on purpose: you draw the feature before you describe it,
+  the client signs off on screens, and the written spec comes after. Every requirement it
+  produces traces back to a dated quote or a design decision someone approved.
+
+  Start by pointing fdw-intake at whatever the client or the sales team gave you — a call
+  transcript, a WBS, an old PRD. It does not need to be tidy. Or just talk to Vadim, who will
+  work out which step you actually want.
+
+agents:
+  - code: ba
+    name: Vadim
+    title: Business Analyst
+    icon: 🧭
+    description: "Front door to the fdw feature-discovery module: knows where every feature stands, what is blocking it, and what to do next."
+
+directories:
+  - "{discovery_folder}"
+
+discovery_folder:
+  prompt: "Where should discovery state live? (feature registry, specs, designs, decisions)"
+  default: "{output_folder}/discovery"
+  result: "{value}"
+  example: "One store per client project. It is the module's memory across phases."
+
+client_name:
+  prompt: "What is the client called? (used in the packets they actually read)"
+  default: "{project_name}"
+  result: "{value}"
+
+prototype_output_path:
+  prompt: "Where should generated prototypes be written?"
+  default: "{project-root}/prototypes"
+  result: "{value}"
+
+component_library_path:
+  prompt: "Where are the project's reusable UI components? (leave blank to auto-detect)"
+  default: ""
+  result: "{value}"
+  example: "src/components — prototypes reuse these so the client sees their own product"
+
+prototype_stack:
+  prompt: "What should prototypes be built in?"
+  type: single-select
+  default: "auto"
+  options:
+    - value: "auto"
+      label: "Auto-detect from the repo (recommended)"
+    - value: "next"
+      label: "Next.js"
+    - value: "react+tailwind"
+      label: "React + Tailwind"
+    - value: "vue+tailwind"
+      label: "Vue + Tailwind"
+    - value: "html+tailwind"
+      label: "Plain HTML + Tailwind"
+  result: "{value}"
+
+client_facing_language:
+  prompt: "What language do client-facing packets go out in?"
+  default: "English"
+  result: "{value}"
+  user_setting: true
+
+figma_enabled:
+  prompt: "Use the Figma MCP for design import and export?"
+  type: confirm
+  default: false
+  result: "{value}"
+  user_setting: true
+  example: "Off by default — the code prototype is the critical path, Figma is optional"
+
+prd_handoff_skill:
+  prompt: "Which skill produces the phase PRD?"
+  default: "bmad-prd"
+  result: "{value}"
+  user_setting: true
+
+post-install-notes: >
+  The discovery store is initialized and phase-1 is open, so you can start immediately.
+
+  Vadim, the BA agent, has one first-run setup of his own. He asks three questions and writes the
+  answers to his memory; after that he opens every session with where the engagement stands rather
+  than with a greeting.
+
+  Nothing here needs tidy input. Point fdw-intake at the messiest thing you have.

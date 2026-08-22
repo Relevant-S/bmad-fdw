@@ -681,9 +681,9 @@ Beyond collecting the config table, `fdw-setup` must:
    Report what's missing without blocking setup.
 6. **Seed the glossary** from the project name and any existing PRD or README found in the repo, so the very
    first intake has terminology to anchor to.
-7. **Remove broken `fdw-*` symlinks** in `.claude/skills/` only — links whose target does not resolve.
-   Nothing under `_bmad/` belongs to this module any more; the shared state CLI ships inside
-   `fdw-intake`.
+7. ~~Remove broken `fdw-*` symlinks~~ — dropped. This was housekeeping for the aborted attempt,
+   which is long cleaned up; on a fresh install there are no broken links, and the generated
+   `cleanup-legacy.py` already verifies a skill exists before removing anything.
 8. **Offer a first-run walkthrough** — "point me at your first document and I'll run intake" is a far better
    ending to setup than "configuration saved."
 
@@ -946,8 +946,27 @@ fixture, and each eval found at least one defect that the unit tests had not.
 | 8 | `fdw-handoff` | 27 | Cross-phase dependency lookup fixed during the eval. |
 | 9 | `fdw-agent-ba` | 9 | Memory agent, named Vadim, four internal capabilities. |
 
-**Remaining:** run **Create Module (CM)** to scaffold `fdw-setup` and the module infrastructure, then
-**Validate Module (VM)**. The Setup Extensions section above is the hand-add list for `fdw-setup`.
+**Packaging complete (2026-08-23).** CM scaffolded `fdw-setup` with `module.yaml` (8 config
+variables, one-agent roster) and a 16-capability `module-help.csv`; the five Setup Extensions above
+were hand-added. VM returns zero structural findings. Full report:
+`skills/reports/module-validation-fdw-2026-08-23.md`.
+
+**Distribution (2026-08-23).** Two separate channels, which are easy to confuse:
+
+- **`bmad install`** discovers a custom module by recursively scanning the project root for a
+  `module.yaml`, skipping any dot-directory plus `node_modules`, `dist`, `build`, `.git`, `bmad`,
+  `src/`, `tools/` and `test/`. Ours sits at `skills/fdw-setup/assets/module.yaml`, so the module has
+  been discoverable since CM ran — verified by calling the installer's own `CustomHandler.findCustomContent`
+  against this project, which returns exactly that one path. **`.claude-plugin/` is never read by
+  `bmad install`**: the scanner skips directories beginning with a dot, and `marketplace.json` is not
+  a filename it looks for.
+- **The Claude Code plugin marketplace** reads `.claude-plugin/marketplace.json`. That file now exists
+  at the repo root, registering all ten skills against the `Relevant-S/bmad-fdw` remote, following the
+  schema `scaffold-standalone-module.py` emits with `skills` extended to a list for a multi-skill module.
+
+`license` is deliberately empty. The repo declares ISC in a default `package.json`, which is npm
+boilerplate rather than a decision anyone made, and choosing a licence is not a call to make on
+someone's behalf. Fill it before publishing.
 
 **Validation milestone — build this test into the process.** After step 5, run the whole chain on the real
 `docs/ba-skills-discussion.json` plus a real client artifact, and check the two things the transcript says
