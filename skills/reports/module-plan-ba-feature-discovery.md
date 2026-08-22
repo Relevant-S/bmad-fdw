@@ -667,8 +667,9 @@ The prototypes themselves are a fifth surface but are a work product of `fdw-des
 
 Beyond collecting the config table, `fdw-setup` must:
 
-1. **Install the shared state CLI** to `{project-root}/_bmad/fdw/scripts/fdw_state.py` — every skill
-   calls it there and none bundles a copy.
+1. **Verify the shared state CLI resolves** at `{skill-root}/../fdw-intake/scripts/fdw_state.py` from
+   each installed skill. It ships inside `fdw-intake`; nothing needs installing, but a layout where
+   skills are not flat siblings would break every skill at once and is worth failing loudly on.
 2. **Scaffold the state store** — create `{discovery_folder}/` with `registry.json` (empty but schema-valid),
    `decisions.md`, `questions.md`, `glossary.md`, `as-built.md`, `sources/index.json`, and `phases/`.
    A half-created store is worse than none; this must be atomic and idempotent.
@@ -681,8 +682,8 @@ Beyond collecting the config table, `fdw-setup` must:
 6. **Seed the glossary** from the project name and any existing PRD or README found in the repo, so the very
    first intake has terminology to anchor to.
 7. **Remove broken `fdw-*` symlinks** in `.claude/skills/` only — links whose target does not resolve.
-   **Never touch `_bmad/fdw/`**: that path held leftovers from the aborted attempt when this plan was
-   written, but it is now where the shared state CLI lives. Deleting it would remove the module's own code.
+   Nothing under `_bmad/` belongs to this module any more; the shared state CLI ships inside
+   `fdw-intake`.
 8. **Offer a first-run walkthrough** — "point me at your first document and I'll run intake" is a far better
    ending to setup than "configuration saved."
 
@@ -876,12 +877,17 @@ eight skills against that file.
 
 ### Contract amendment made during the fdw-design build (2026-08-22)
 
-The shared state CLI moved out of `fdw-intake` to **`{project-root}/_bmad/fdw/scripts/fdw_state.py`**,
-mirroring how BMad ships `memlog.py` at `_bmad/scripts/`. `fdw-design` was the first skill besides
-intake that had to write to the store; leaving the script inside one skill would have made it a
-cross-skill path dependency in three more places by skill six. Every fdw skill now calls
-`{state-cli}` and bundles no copy. `_bmad/fdw` is un-ignored in git so the module payload is
-version controlled, and installing it is a `fdw-setup` responsibility.
+The shared state CLI lives at **`skills/fdw-intake/scripts/fdw_state.py`** — inside the skill that
+owns the contract, so the two ship together. Every other skill reaches it as
+`{skill-root}/../fdw-intake/scripts/fdw_state.py`, since installed skills land as flat siblings, and
+none bundles a copy.
+
+It briefly lived at `{project-root}/_bmad/fdw/scripts/` during the fdw-design build, mirroring how
+BMad ships `memlog.py`. That was wrong for a *module*: the installer only ships the `skills/` tree,
+so `_bmad/fdw/` would never have reached a target machine and every skill would have resolved a
+missing CLI. A neutral `skills/fdw-shared/` was rejected too — a top-level directory with no
+SKILL.md either fails to ship (if the installer enumerates skills by SKILL.md) or registers as a
+tenth skill (if it enumerates directories). Living inside a real skill has neither failure mode.
 
 The CLI gained **`feature-set`**, which every downstream skill uses to advance a feature. The
 lifecycle gates are enforced there: a forward move cannot skip a stage (`sliced → spec-approved` is
@@ -930,7 +936,7 @@ fixture, and each eval found at least one defect that the unit tests had not.
 
 | # | Skill | Tests | Notes |
 | --- | --- | --- | --- |
-| 1 | `fdw-intake` | shared CLI: 59 | Defines the contract. State CLI later relocated to `_bmad/fdw/scripts/`. |
+| 1 | `fdw-intake` | 59 | Defines the contract, and ships the shared state CLI every other skill calls. |
 | 2 | `fdw-status` | 19 | Read-only by construction. |
 | 3 | `fdw-design` | 18 | Templates rewritten so boilerplate cannot satisfy the gate. |
 | 4 | `fdw-client-packet` | 28 | Vocabulary gate refuses internal terms in a client document. |

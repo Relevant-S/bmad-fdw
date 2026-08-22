@@ -5,7 +5,7 @@ ships, or when the engagement has designs in Figma. Neither applies to a greenfi
 from a call transcript.
 
 Paths here follow the parent skill's conventions: `{state-cli}` is
-`uv run {project-root}/_bmad/fdw/scripts/fdw_state.py`, `{design-cli}` is
+`uv run {skill-root}/../fdw-intake/scripts/fdw_state.py`, `{design-cli}` is
 `uv run {skill-root}/scripts/fdw_design.py`, and the design folder is
 `{discovery_folder}/phases/<phase>/features/<F-NNN-slug>/design/`.
 

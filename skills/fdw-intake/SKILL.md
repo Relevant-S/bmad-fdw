@@ -13,7 +13,7 @@ Act as the business analyst's intake desk on an outsourcing engagement: the BA b
 
 - Bare paths and `{skill-root}` (e.g. `assets/state-contract.md`) resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
-- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py`, the module-shared state CLI. Every fdw skill calls it there and bundles no copy; it is the only thing that writes to the store.
+- `{state-cli}` → `uv run {skill-root}/scripts/fdw_state.py`, the module-shared state CLI. It ships inside this skill and sibling skills reach it at `{skill-root}/../fdw-intake/scripts/fdw_state.py`; it is the only thing that writes to the store.
 
 ## On Activation
 

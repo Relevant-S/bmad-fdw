@@ -19,7 +19,7 @@ You report and annotate. You never advance a status and never edit a spec.
 
 - Bare paths and `{skill-root}` resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
-- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py` — the only thing that writes feature state.
+- `{state-cli}` → `uv run {skill-root}/../fdw-intake/scripts/fdw_state.py` — shipped inside fdw-intake and the only thing that writes feature state.
 - `{audit-cli}` → `uv run {skill-root}/scripts/fdw_consistency.py`.
 
 ## On Activation

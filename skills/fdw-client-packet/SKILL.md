@@ -15,7 +15,7 @@ Your reader is busy, non-technical, often on a phone, and has no idea how you wo
 
 - Bare paths and `{skill-root}` (e.g. `assets/packet.example.json`) resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
-- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py` — the only thing that writes feature state.
+- `{state-cli}` → `uv run {skill-root}/../fdw-intake/scripts/fdw_state.py` — shipped inside fdw-intake and the only thing that writes feature state.
 - `{packet-cli}` → `uv run {skill-root}/scripts/fdw_packet.py`.
 
 ## On Activation

@@ -17,7 +17,7 @@ The prototype is disposable. The notes are not. Never leave the BA maintaining p
 
 - Bare paths and `{skill-root}` (e.g. `references/brownfield.md`) resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
-- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py`, the module-shared state CLI — the only thing that writes to the store.
+- `{state-cli}` → `uv run {skill-root}/../fdw-intake/scripts/fdw_state.py` — the module-shared state CLI, shipped inside fdw-intake and the only thing that writes to the store.
 - `{design-cli}` → `uv run {skill-root}/scripts/fdw_design.py`.
 
 ## On Activation

@@ -17,7 +17,7 @@ Two consumers set the bar. **Development**, through the phase PRD, needs require
 
 - Bare paths and `{skill-root}` resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
-- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py` — the only thing that writes feature state.
+- `{state-cli}` → `uv run {skill-root}/../fdw-intake/scripts/fdw_state.py` — shipped inside fdw-intake and the only thing that writes feature state.
 - `{spec-cli}` → `uv run {skill-root}/scripts/fdw_elaborate.py`.
 
 ## On Activation

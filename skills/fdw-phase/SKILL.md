@@ -17,7 +17,7 @@ A deferred feature **moves** — it is never re-created. It keeps its `F-NNN` id
 
 - Bare paths and `{skill-root}` resolve from this skill's installed directory.
 - `{project-root}` → the project working directory.
-- `{state-cli}` → `uv run {project-root}/_bmad/fdw/scripts/fdw_state.py` — phase mechanics live there, so the registry and the folders can never disagree.
+- `{state-cli}` → `uv run {skill-root}/../fdw-intake/scripts/fdw_state.py` — phase mechanics live in that shared CLI, so the registry and the folders can never disagree.
 - `{phase-cli}` → `uv run {skill-root}/scripts/fdw_phase.py`.
 
 ## On Activation

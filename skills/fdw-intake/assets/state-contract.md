@@ -4,7 +4,7 @@ The shared data contract for the fdw (Feature Discovery Workflow) module. Every 
 writes the store through the module-shared state CLI, never by hand-editing JSON:
 
 ```
-uv run {project-root}/_bmad/fdw/scripts/fdw_state.py <command> --root {discovery_folder}
+uv run {skill-root}/scripts/fdw_state.py <command> --root {discovery_folder}
 ```
 
 Commands: `init`, `normalize`, `context`, `validate-plan`, `apply-plan`, `record-empty`,

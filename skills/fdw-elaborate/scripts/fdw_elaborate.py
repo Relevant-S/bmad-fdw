@@ -26,7 +26,7 @@ LIFECYCLE = [
     "candidate", "sliced", "designing", "client-review", "design-approved",
     "speccing", "spec-approved", "handed-off", "shipped",
 ]
-STATE_CLI = "uv run {project-root}/_bmad/fdw/scripts/fdw_state.py"
+
 SPEC_LOCKED = {"spec-approved", "handed-off", "shipped"}
 SECTIONS = [
     "Need", "Rules", "Requirements", "Out of scope",
@@ -109,6 +109,14 @@ def requirement_lines(text: str) -> list[tuple[int, str, str | None]]:
 # ---------------------------------------------------------------- gather
 
 
+def state_cli() -> str:
+    """The shared state CLI ships inside fdw-intake, a sibling of this skill once installed.
+    Resolve a real path so the command printed here is one the caller can actually paste."""
+    sibling = Path(__file__).resolve().parents[2] / "fdw-intake" / "scripts" / "fdw_state.py"
+    return f"uv run {sibling}" if sibling.exists() else \
+        "uv run {skill-root}/../fdw-intake/scripts/fdw_state.py"
+
+
 def walk_to(root: Path, entry: dict[str, Any], target: str, by: str, note: str = "",
             final_extra: str = "") -> list[str]:
     """feature-set refuses a forward move that skips a gate, so emit every step rather than a
@@ -119,7 +127,7 @@ def walk_to(root: Path, entry: dict[str, Any], target: str, by: str, note: str =
         return []
     steps = []
     for stage in LIFECYCLE[here + 1:want + 1]:
-        cmd = f"{STATE_CLI} feature-set --root {root} --id {entry['id']} --status {stage} --by {by}"
+        cmd = f"{state_cli()} feature-set --root {root} --id {entry['id']} --status {stage} --by {by}"
         if stage == target:
             cmd += final_extra
             if note:

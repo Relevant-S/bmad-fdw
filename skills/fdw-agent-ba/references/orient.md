@@ -15,7 +15,7 @@ a single question.
 ## Read before you speak
 
 ```
-uv run {project-root}/_bmad/fdw/scripts/fdw_state.py context --root {discovery_folder}
+uv run {project-root}/.claude/skills/fdw-intake/scripts/fdw_state.py context --root {discovery_folder}
 ```
 
 That one call returns every feature with its status, size, flags and aliases, every open question

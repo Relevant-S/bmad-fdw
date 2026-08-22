@@ -47,14 +47,9 @@ SIZES = ["XS", "S", "M", "L", "XL"]
 # change record instead. This is the sandbox rule, enforced here rather than trusted to prose.
 SPEC_LOCKED = {"spec-approved", "handed-off", "shipped"}
 
-# The contract ships with fdw-intake, which owns it. This script is module-shared, so it
-# looks in both the installed and the in-repo location rather than assuming one layout.
+# This script and the contract it copies both ship inside fdw-intake, which owns them.
 _HERE = Path(__file__).resolve()
-CONTRACT_SEARCH = [
-    _HERE.parent.parent / "assets" / "state-contract.md",
-    _HERE.parents[3] / "skills" / "fdw-intake" / "assets" / "state-contract.md",
-    _HERE.parents[2] / "skills" / "fdw-intake" / "assets" / "state-contract.md",
-]
+CONTRACT_SEARCH = [_HERE.parent.parent / "assets" / "state-contract.md"]
 
 ANCHOR_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*#(?:t=\d{1,2}:\d{2}(?::\d{2})?|L=\d+(?:-\d+)?|p=\d+|s=[a-z0-9-]+)$")
 

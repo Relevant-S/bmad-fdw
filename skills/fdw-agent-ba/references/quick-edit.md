@@ -19,7 +19,7 @@ Everything goes through the shared state CLI, which is the only thing in the mod
 feature state — so the registry and the feature folders can never drift apart:
 
 ```
-uv run {project-root}/_bmad/fdw/scripts/fdw_state.py <command> --root {discovery_folder}
+uv run {project-root}/.claude/skills/fdw-intake/scripts/fdw_state.py <command> --root {discovery_folder}
 ```
 
 - **Size, flags, dependencies, overlaps** — `feature-set --id F-003 --size XL --by fdw-agent-ba --note "…"`

@@ -282,11 +282,20 @@ LIFECYCLE = [
 ]
 
 
+def state_cli() -> str:
+    """The shared state CLI ships inside fdw-intake, a sibling of this skill once installed.
+    Resolve a real path so the command printed here is one the caller can actually paste."""
+    sibling = Path(__file__).resolve().parents[2] / "fdw-intake" / "scripts" / "fdw_state.py"
+    return f"uv run {sibling}" if sibling.exists() else \
+        "uv run {skill-root}/../fdw-intake/scripts/fdw_state.py"
+
+
+
 def advance_commands(root: Path, entry: dict[str, Any]) -> list[str]:
     """The actual command sequence from where the feature is to client-review. feature-set
     refuses a forward move that skips a gate, so suggesting the single end-state command
     would hand the caller something that fails."""
-    cli = "uv run {project-root}/_bmad/fdw/scripts/fdw_state.py"
+    cli = state_cli()
     target = LIFECYCLE.index("client-review")
     here = LIFECYCLE.index(entry["status"]) if entry["status"] in LIFECYCLE else target
     if here >= target:
