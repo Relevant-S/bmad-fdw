@@ -582,3 +582,23 @@ def test_closing_an_already_closed_question_is_refused(root, one_feature):
     payload = run("question-close", "--root", str(root), "--question-id", "F-001-Q-01",
                   "--answer", "yes again", "--source", "client", expect_ok=False)
     assert "not an open question" in payload["errors"][0]
+
+
+def test_overlap_is_recorded_on_both_features(tmp_path, root, source, one_feature):
+    second = plan_for(source)
+    second["new_features"][0].update({"title": "Academy", "slug": "academy"})
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, second, "p2.json"))
+    out = run("feature-set", "--root", str(root), "--id", "F-002", "--overlaps", "F-001",
+              "--note", "Academy repeats most of sessions")
+    assert "overlaps F-001 (both ways)" in out["changed"]
+    registry = {f["id"]: f for f in json.loads((root / "registry.json").read_text())["features"]}
+    assert registry["F-002"]["overlaps"] == ["F-001"]
+    assert registry["F-001"]["overlaps"] == ["F-002"], "a one-sided edge is a graph everyone has to guess at"
+    peer = json.loads((root / "phases/phase-1/features/F-001-session-management/feature.json").read_text())
+    assert peer["overlaps"] == ["F-002"]
+
+
+def test_self_overlap_is_refused(root, one_feature):
+    payload = run("feature-set", "--root", str(root), "--id", one_feature,
+                  "--overlaps", one_feature, expect_ok=False)
+    assert "cannot overlap itself" in payload["errors"][0]

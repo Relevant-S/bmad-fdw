@@ -965,6 +965,28 @@ def cmd_feature_set(args: argparse.Namespace) -> None:
                 target["flags"].remove(flag)
         changes.append(f"-flag {flag}")
 
+    for other in args.overlaps or []:
+        if other == args.id:
+            die([f"{args.id} cannot overlap itself."])
+        if other not in {f["id"] for f in registry.get("features", [])}:
+            die([f"overlaps '{other}' is not a feature in the registry."])
+        # Overlap is symmetric, so record both directions. A one-sided edge is a graph the
+        # dashboard and the audit would each have to guess at.
+        peer = next(f for f in registry["features"] if f["id"] == other)
+        peer_dir = _feature_dir(root, peer)
+        peer_record = read_json(peer_dir / "feature.json", {})
+        for target in (entry, record):
+            if other not in target.setdefault("overlaps", []):
+                target["overlaps"].append(other)
+        for target in (peer, peer_record):
+            if args.id not in target.setdefault("overlaps", []):
+                target["overlaps"].append(args.id)
+        if peer_record:
+            peer_record["updated"] = stamp
+            write_json_atomic(peer_dir / "feature.json", peer_record)
+        peer["updated"] = stamp
+        changes.append(f"overlaps {other} (both ways)")
+
     for dep in args.depends_on or []:
         if dep == args.id:
             die([f"{args.id} cannot depend on itself."])
@@ -1144,6 +1166,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--add-flag", action="append", dest="add_flag")
     p.add_argument("--remove-flag", action="append", dest="remove_flag")
     p.add_argument("--depends-on", action="append", dest="depends_on")
+    p.add_argument("--overlaps", action="append", dest="overlaps", help="record a symmetric overlap edge")
     p.add_argument("--note", default=None, help="one line for decisions.md")
     p.add_argument("--by", default=None, help="which skill made the change")
     p.add_argument("--force", action="store_true", help="allow a forward move that skips a gate; logged as an override")
