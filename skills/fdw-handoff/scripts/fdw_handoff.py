@@ -30,6 +30,15 @@ ELIGIBLE = "spec-approved"
 REQ = re.compile(r"^\s*-\s+\*\*\[(?P<id>[A-Z0-9-]+-R-\d+)\]\*\*\s+(?P<body>.+?)\s*$", re.M)
 
 
+def phase_key(label: str) -> tuple[int, ...]:
+    """Sort phases by numeric label, not by position in the registry list. A brownfield store
+    starts at whatever phase the project is really on, so insertion order is not chronology.
+    Mirrors the helper in fdw_state.py; five lines are cheaper than a cross-skill import."""
+    nums = re.findall(r"\d+", label or "")
+    return tuple(int(n) for n in nums) or (0,)
+
+
+
 def emit(payload: dict[str, Any]) -> None:
     payload.setdefault("ok", True)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -111,12 +120,12 @@ def select(data: dict[str, Any], ids: list[str] | None) -> tuple[list[dict], lis
 
 def trend(root: Path, registry: dict[str, Any], upto: str) -> list[dict[str, Any]]:
     out = []
-    for name in registry.get("phases", []):
+    for name in sorted(registry.get("phases", []), key=phase_key):
+        if phase_key(name) > phase_key(upto):
+            break
         record = read_json(root / "phases" / name / "phase.json", {}) or {}
         if record.get("blocker_count_at_handoff") is not None:
             out.append({"phase": name, "blockers": record["blocker_count_at_handoff"]})
-        if name == upto:
-            break
     return out
 
 

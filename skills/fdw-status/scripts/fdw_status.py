@@ -47,6 +47,15 @@ SIZES = ["XS", "S", "M", "L", "XL"]
 DONE = {"handed-off", "shipped"}
 
 
+def phase_key(label: str) -> tuple[int, ...]:
+    """Sort phases by numeric label, not by position in the registry list. A brownfield store
+    starts at whatever phase the project is really on, so insertion order is not chronology.
+    Mirrors the helper in fdw_state.py; five lines are cheaper than a cross-skill import."""
+    nums = re.findall(r"\d+", label or "")
+    return tuple(int(n) for n in nums) or (0,)
+
+
+
 def die(message: str) -> None:
     print(json.dumps({"ok": False, "errors": [message]}, indent=2))
     sys.exit(1)
@@ -127,7 +136,7 @@ def collect(root: Path, phase_filter: str | None) -> dict[str, Any]:
             )
 
     phases = []
-    for name in registry.get("phases", []):
+    for name in sorted(registry.get("phases", []), key=phase_key):
         record = read_json(root / "phases" / name / "phase.json", {})
         members = [f for f in board if f["phase"] == name]
         phases.append(

@@ -139,12 +139,27 @@ def today() -> str:
 # ---------------------------------------------------------------- init
 
 
-def empty_registry() -> dict[str, Any]:
+def phase_key(label: str) -> tuple[int, ...]:
+    """Sort phases by their numeric label, so phase-2.1 sits between 2 and 3 and phase-10
+    after phase-9. Insertion order stops being reliable the moment a brownfield store starts
+    at phase-3 and someone later opens an earlier one."""
+    nums = re.findall(r"\d+", label or "")
+    return tuple(int(n) for n in nums) or (0,)
+
+
+def sort_phases(labels: list[str]) -> list[str]:
+    return sorted(dict.fromkeys(labels), key=phase_key)
+
+
+def empty_registry(phase: str = "phase-1") -> dict[str, Any]:
+    """A new store knows about exactly one phase: the one it was started at. Earlier phases
+    are deliberately absent — this module never invents history it has no evidence for, and a
+    brownfield project's prior work belongs in as-built.md, not in fabricated phase records."""
     return {
         "contract_version": CONTRACT_VERSION,
-        "current_phase": "phase-1",
+        "current_phase": phase,
         "next_feature_seq": 1,
-        "phases": ["phase-1"],
+        "phases": [phase],
         "features": [],
     }
 
@@ -159,8 +174,12 @@ def cmd_init(args: argparse.Namespace) -> None:
             directory.mkdir(parents=True, exist_ok=True)
             created.append(str(directory))
 
-    if not paths["registry"].exists():
-        write_json_atomic(paths["registry"], empty_registry())
+    # Decide the starting phase before the registry is written, so current_phase and the
+    # phases list agree with the folder that actually gets created.
+    fresh = not paths["registry"].exists()
+    start_phase = args.phase or ("phase-1" if fresh else None)
+    if fresh:
+        write_json_atomic(paths["registry"], empty_registry(start_phase))
         created.append(str(paths["registry"]))
 
     if not paths["sources_index"].exists():
@@ -179,7 +198,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             created.append(str(path))
 
     registry = read_json(paths["registry"], empty_registry())
-    phase = args.phase or registry.get("current_phase", "phase-1")
+    phase = start_phase or registry.get("current_phase", "phase-1")
     phase_dir = paths["phases"] / phase
     phase_file = phase_dir / "phase.json"
     if not phase_file.exists():
@@ -201,7 +220,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         )
         created.append(str(phase_file))
         if phase not in registry.get("phases", []):
-            registry.setdefault("phases", []).append(phase)
+            registry["phases"] = sort_phases(registry.get("phases", []) + [phase])
             write_json_atomic(paths["registry"], registry)
 
     contract_src = next(
@@ -212,7 +231,9 @@ def cmd_init(args: argparse.Namespace) -> None:
         shutil.copyfile(contract_src, paths["contract"])
         created.append(str(paths["contract"]))
 
-    emit({"root": str(root), "created": created, "already_present": not created, "current_phase": phase})
+    emit({"root": str(root), "created": created, "already_present": not created,
+          "current_phase": registry.get("current_phase", phase), "phase": phase,
+          "phases": registry.get("phases", [phase])})
 
 
 # ---------------------------------------------------------------- normalize
@@ -1107,7 +1128,7 @@ def cmd_phase_open(args: argparse.Namespace) -> None:
         "blocker_count_at_handoff": None, "prd_path": None,
     })
     if args.phase not in registry.setdefault("phases", []):
-        registry["phases"].append(args.phase)
+        registry["phases"] = sort_phases(registry["phases"] + [args.phase])
     if not args.keep_current:
         registry["current_phase"] = args.phase
     write_json_atomic(paths["registry"], registry)
@@ -1135,21 +1156,21 @@ def cmd_phase_move(args: argparse.Namespace) -> None:
         return
 
     order = registry.get("phases", [])
-    here = order.index(entry["phase"]) if entry["phase"] in order else 0
-    there = order.index(args.to) if args.to in order else 0
+    here, there = phase_key(entry["phase"]), phase_key(args.to)
     by_id = {f["id"]: f for f in registry["features"]}
     violations = []
     for dep in entry.get("depends_on", []):
         target = by_id.get(dep)
-        if target and target["phase"] in order and order.index(target["phase"]) > there:
+        if target and phase_key(target["phase"]) > there:
             violations.append(f"{args.id} depends on {dep} in {target['phase']}, which would then ship later.")
     for other in registry["features"]:
-        if args.id in other.get("depends_on", []) and other["phase"] in order:
-            if order.index(other["phase"]) < there:
+        if args.id in other.get("depends_on", []):
+            if phase_key(other["phase"]) < there:
                 violations.append(f"{other['id']} in {other['phase']} depends on {args.id}, which would then ship later.")
     if violations and not args.force:
         die(violations + ["Move the dependency too, drop the edge, or pass --force to accept the break."])
 
+    src_phase = entry["phase"]
     src = _feature_dir(root, entry)
     entry["phase"] = args.to
     dst = _feature_dir(root, entry)
@@ -1175,7 +1196,7 @@ def cmd_phase_move(args: argparse.Namespace) -> None:
         write_json_atomic(dst / "feature.json", record)
     entry["updated"] = today()
 
-    for phase in {p for p in (order[here] if here < len(order) else None, args.to) if p}:
+    for phase in {p for p in (src_phase, args.to) if p}:
         pf = _phase_file(root, phase)
         precord = read_json(pf, None)
         if precord is None:
@@ -1233,6 +1254,58 @@ def cmd_phase_close(args: argparse.Namespace) -> None:
     emit({"phase": args.phase, "closed": stamp, "features": len(members),
           "blocker_count_at_handoff": len(blockers), "blockers": blockers,
           "forced_past": unfinished if args.force else []})
+
+
+def cmd_as_built_seed(args: argparse.Namespace) -> None:
+    """Record what a brownfield project already shipped, before this module was installed.
+
+    The content is the BA's — summarised from a prior PRD, a handover note, or dictated.
+    This command only files it, and refuses to overwrite a baseline that already has
+    substance, because as-built.md is what later phases are specced against."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    if not paths["registry"].exists():
+        die([f"No store at {root}. Run: fdw_state.py init --root {root}"])
+
+    if args.file:
+        source_file = Path(args.file).resolve()
+        if not source_file.exists():
+            die([f"No such file: {source_file}"])
+        content = source_file.read_text(encoding="utf-8").strip()
+    else:
+        content = (args.text or "").strip()
+    if not content:
+        die(["Nothing to record. Pass --file <markdown> or --text \"...\"."])
+
+    path = paths["as_built"]
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    body = existing.split("_Nothing shipped yet._")[-1].strip() if existing else ""
+    if body and not args.force:
+        die([
+            "as-built.md already describes shipped work. Seeding is for a store that has none.",
+            "Pass --force only if you mean to prepend another baseline section.",
+        ])
+
+    stamp = today()
+    header = "# As-Built Baseline\n\nWhat has actually shipped. Refreshed by fdw-handoff at each phase close.\n"
+    section = [
+        f"## Before {args.phase}" if args.phase else "## Before this module",
+        "",
+        f"_Recorded at setup on {stamp}"
+        + (f" from {args.source}" if args.source else " from the BA")
+        + ". Not produced by this module — treat it as context, not as verified requirements._",
+        "",
+        content,
+        "",
+    ]
+    _write_atomic(path, header + "\n" + "\n".join(section) + (("\n" + body) if body else ""))
+    append_md(
+        paths["decisions"],
+        f"- {stamp} · event · seeded as-built baseline for work delivered before "
+        f"{args.phase or 'this module'} · source: {args.source or 'BA'}",
+    )
+    emit({"as_built": str(path.relative_to(root)), "phase": args.phase,
+          "chars": len(content), "source": args.source})
 
 
 # ---------------------------------------------------------------- store integrity
@@ -1388,6 +1461,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--prd-path", default=None, dest="prd_path")
     p.add_argument("--force", action="store_true", help="close with unfinished features")
     p.set_defaults(func=cmd_phase_close)
+
+    p = sub.add_parser("as-built-seed", help="record what a brownfield project shipped before this module")
+    p.add_argument("--root", required=True)
+    p.add_argument("--file", default=None, help="markdown file describing what already exists")
+    p.add_argument("--text", default=None, help="the description inline, instead of --file")
+    p.add_argument("--phase", default=None, help="the phase this module is starting at")
+    p.add_argument("--source", default=None, help="where the description came from, e.g. a prior PRD path")
+    p.add_argument("--force", action="store_true", help="prepend even though a baseline already exists")
+    p.set_defaults(func=cmd_as_built_seed)
 
     p = sub.add_parser("validate", help="check the registry and the feature folders still agree")
     p.add_argument("--root", required=True)

@@ -38,6 +38,15 @@ WORD = re.compile(r"[a-zA-Z][a-zA-Z-]{2,}")
 REQ = re.compile(r"^\s*-\s+(?:\*\*\[(?P<id>[A-Z0-9-]+-R-\d+)\]\*\*\s+)?(?P<body>.+?)\s*$")
 
 
+def phase_key(label: str) -> tuple[int, ...]:
+    """Sort phases by numeric label, not by position in the registry list. A brownfield store
+    starts at whatever phase the project is really on, so insertion order is not chronology.
+    Mirrors the helper in fdw_state.py; five lines are cheaper than a cross-skill import."""
+    nums = re.findall(r"\d+", label or "")
+    return tuple(int(n) for n in nums) or (0,)
+
+
+
 def emit(payload: dict[str, Any]) -> None:
     payload.setdefault("ok", True)
     print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -140,7 +149,6 @@ def load(root: Path, scope_phase: str | None, scope_id: str | None) -> dict[str,
 def hard_findings(root: Path, data: dict[str, Any]) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     by_id = {f["id"]: f for f in data["features"]}
-    phase_order = {name: i for i, name in enumerate(data["registry"].get("phases", []))}
 
     # Dependency cycles.
     placed: set[str] = set()
@@ -168,8 +176,7 @@ def hard_findings(root: Path, data: dict[str, Any]) -> list[dict[str, Any]]:
                     "detail": f"{feature['id']} depends on '{dep}', which is not in the registry.",
                 })
                 continue
-            here, there = phase_order.get(feature["phase"], 0), phase_order.get(target["phase"], 0)
-            if there > here:
+            if phase_key(target["phase"]) > phase_key(feature["phase"]):
                 found.append({
                     "kind": "backward-dependency", "severity": "high",
                     "features": [feature["id"], dep],

@@ -92,7 +92,12 @@ Run the setup once:
 
 It will ask you a handful of questions — where to keep your files, what the client is called, and so on. Every question has a sensible default, so *"accept all defaults"* is a perfectly good answer the first time.
 
-Setup also creates your working folder and opens phase 1, so you can start immediately.
+One question is worth reading properly: **"Is this a new build, or a project already partway through delivery?"**
+
+- **New build** (the default) — setup creates your working folder and opens phase 1. Done.
+- **Already in flight** — it asks which phase the project is actually on, and whether you have anything describing what is already live. See *[Starting on a project that is already running](#starting-on-a-project-that-is-already-running)*.
+
+Either way, you can start immediately after setup finishes.
 
 ---
 
@@ -441,6 +446,24 @@ A **phase** is one round of delivery — a chunk of work the client buys, develo
 
 Setup opens phase 1 for you. Everything you take in lands there by default. You work through the features, hand them over, and close it.
 
+### Starting on a project that is already running
+
+Most real work is not a fresh start. You get handed a project that has been going for months and is on its third round of delivery.
+
+Tell setup it is **already in flight**, and it asks two things.
+
+**Which phase is the project actually on?** Answer in whatever form is natural — `3`, `phase-3`, or a fractional one like `2.1` if you are mid-way through a split phase. That becomes your starting phase, instead of phase 1.
+
+**Is there anything describing what already exists?** A previous requirements document, a handover note, or just a couple of sentences typed into the chat. Any of those work, and "nothing" is a fine answer too.
+
+Whatever you give it goes into the **as-built baseline** — the record of what is already live. That is what the prototype tool reads when you ask it to rebuild an existing screen, and what the spec tool checks so it does not re-specify something that already exists.
+
+**What it will not do is invent the earlier phases.** If you start at phase 3, phases 1 and 2 simply are not in the system. That is deliberate. This toolkit's firmest rule is that it never reports anything it has not actually read, and creating two empty "completed" phases it knows nothing about would break that — and would make the unanswered-question trend meaningless, which is the one number worth watching.
+
+So the phase history starts where you started. What came before lives in the as-built baseline, clearly marked as something you told it rather than something it verified.
+
+Everything else behaves normally. Open phase 4 next, or go back and add phase 2 later if you need to — it always works out which phase comes before which from the number itself, not the order you created them in.
+
 ### Handing over and moving on
 
 When phase 1 is done:
@@ -513,6 +536,10 @@ You need Node.js installed to run prototypes. Without it they are still generate
 
 Figma is optional and off by default. The prototype is the main path. Carry on without it.
 
+### My phase history looks incomplete
+
+If you started on a project already in flight, the earlier phases are genuinely not there, on purpose. What shipped before is in `as-built.md`, not in the phase list. Nothing is broken.
+
 ### The numbers look wrong
 
 Say *"check the discovery store"*. It compares the master list against the folders and tells you exactly what disagrees.
@@ -529,6 +556,12 @@ No. Intake and elaborate are the core. Everything else is there when you need it
 
 **Can I skip the prototype and go straight to the spec?**
 It will stop you, and that is on purpose. Writing the spec first is the failure this whole approach exists to fix. If you truly need to, say so and it will let you past.
+
+**We're already halfway through a project. Can I still use this?**
+Yes — that is the "already in flight" option at setup. You start at the phase the project is really on, and tell it what already exists. See section 6.
+
+**I told setup phase 1 but we're actually on phase 3.**
+Run setup again and choose "already in flight". If you have already taken features in, do not re-run setup — say *"open phase 3"* and then *"move these to phase 3"* instead.
 
 **Can I run more than one client project?**
 Yes. Install it separately in each project folder. Each keeps its own records.

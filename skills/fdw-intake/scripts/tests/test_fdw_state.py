@@ -721,3 +721,104 @@ def test_the_store_stays_consistent_across_a_phase_move(root, two_features):
     run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
     run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2")
     assert run("validate", "--root", str(root))["healthy"] is True
+
+
+# ---------------------------------------------------------------- brownfield starting phase
+
+
+def test_greenfield_init_is_untouched(tmp_path):
+    out = run("init", "--root", str(tmp_path / "d"))
+    assert out["current_phase"] == "phase-1" and out["phases"] == ["phase-1"]
+
+
+@pytest.mark.parametrize("start", ["phase-3", "phase-2.1", "phase-10"])
+def test_a_store_can_start_at_any_phase(tmp_path, start):
+    root = tmp_path / "d"
+    out = run("init", "--root", str(root), "--phase", start)
+    assert out["current_phase"] == start
+    assert out["phases"] == [start]
+    assert (root / "phases" / start / "phase.json").exists()
+    assert run("validate", "--root", str(root))["healthy"] is True
+
+
+def test_earlier_phases_are_not_invented(tmp_path):
+    """The module never fabricates history it has no evidence for. Prior work belongs in
+    as-built.md, not in empty phase records that would poison the blocker trend."""
+    root = tmp_path / "d"
+    run("init", "--root", str(root), "--phase", "phase-3")
+    assert sorted(p.name for p in (root / "phases").iterdir()) == ["phase-3"]
+    assert json.loads((root / "registry.json").read_text())["phases"] == ["phase-3"]
+
+
+def test_phases_stay_in_chronological_order_however_they_are_opened(tmp_path):
+    root = tmp_path / "d"
+    run("init", "--root", str(root), "--phase", "phase-3")
+    run("phase-open", "--root", str(root), "--phase", "phase-10", "--keep-current")
+    run("phase-open", "--root", str(root), "--phase", "phase-3.1", "--keep-current")
+    out = run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    assert out["phase"] == "phase-2"
+    phases = json.loads((root / "registry.json").read_text())["phases"]
+    assert phases == ["phase-2", "phase-3", "phase-3.1", "phase-10"], \
+        "position in the list is chronology; append order is not"
+
+
+def test_move_direction_is_judged_by_label_not_list_position(tmp_path, root, source):
+    """With a brownfield store the phases list can be built out of order, so a move that
+    strands a dependency has to be caught from the labels themselves."""
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, plan_for(source)))
+    second = plan_for(source)
+    second["new_features"][0].update({"title": "Academy", "slug": "academy"})
+    run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, second, "p2.json"))
+    run("feature-set", "--root", str(root), "--id", "F-001", "--depends-on", "F-002")
+    run("phase-open", "--root", str(root), "--phase", "phase-0.5", "--keep-current")
+    run("phase-open", "--root", str(root), "--phase", "phase-2", "--keep-current")
+    # F-001 depends on F-002; pushing F-002 later than F-001 must be refused.
+    payload = run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-2", expect_ok=False)
+    assert "depends on F-002" in " ".join(payload["errors"])
+    # Pulling F-002 earlier is fine.
+    assert run("phase-move", "--root", str(root), "--id", "F-002", "--to", "phase-0.5")["moved"] is True
+
+
+# ---------------------------------------------------------------- as-built seeding
+
+
+def test_as_built_seed_records_prior_work_as_context(tmp_path, root):
+    note = tmp_path / "prior.md"
+    note.write_text("### Events\n\nAgenda, sessions and attendance shipped in phases 1 and 2.\n")
+    out = run("as-built-seed", "--root", str(root), "--file", str(note),
+              "--phase", "phase-3", "--source", "docs/prd-phase-2.md")
+    text = (root / out["as_built"]).read_text()
+    assert "## Before phase-3" in text
+    assert "Agenda, sessions and attendance shipped" in text
+    assert "docs/prd-phase-2.md" in text
+    assert "not as verified requirements" in text, \
+        "seeded content is the BA's word, not something this module verified"
+    assert "seeded as-built baseline" in (root / "decisions.md").read_text()
+
+
+def test_as_built_seed_accepts_inline_text(root):
+    run("as-built-seed", "--root", str(root), "--text", "Login and billing already exist.")
+    assert "Login and billing already exist." in (root / "as-built.md").read_text()
+
+
+def test_as_built_seed_needs_something_to_record(root):
+    assert "Nothing to record" in run("as-built-seed", "--root", str(root), expect_ok=False)["errors"][0]
+
+
+def test_as_built_seed_refuses_to_clobber_a_real_baseline(root):
+    run("as-built-seed", "--root", str(root), "--text", "First baseline.")
+    payload = run("as-built-seed", "--root", str(root), "--text", "Second.", expect_ok=False)
+    assert "already describes shipped work" in payload["errors"][0]
+    assert "First baseline." in (root / "as-built.md").read_text()
+
+
+def test_as_built_seed_can_prepend_with_force(root):
+    run("as-built-seed", "--root", str(root), "--text", "First baseline.")
+    run("as-built-seed", "--root", str(root), "--text", "Newer baseline.", "--force")
+    text = (root / "as-built.md").read_text()
+    assert "Newer baseline." in text and "First baseline." in text
+
+
+def test_as_built_seed_needs_a_store(tmp_path):
+    payload = run("as-built-seed", "--root", str(tmp_path / "nope"), "--text", "x", expect_ok=False)
+    assert "init" in payload["errors"][0]

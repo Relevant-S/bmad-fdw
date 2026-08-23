@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -27,6 +28,15 @@ LIFECYCLE = [
 ]
 TERMINAL = {"handed-off", "shipped"}
 SIZE_WEIGHT = {"XS": 1, "S": 2, "M": 3, "L": 5, "XL": 8}
+
+
+def phase_key(label: str) -> tuple[int, ...]:
+    """Sort phases by numeric label, not by position in the registry list. A brownfield store
+    starts at whatever phase the project is really on, so insertion order is not chronology.
+    Mirrors the helper in fdw_state.py; five lines are cheaper than a cross-skill import."""
+    nums = re.findall(r"\d+", label or "")
+    return tuple(int(n) for n in nums) or (0,)
+
 
 
 def emit(payload: dict[str, Any]) -> None:
@@ -68,7 +78,7 @@ def load(root: Path) -> dict[str, Any]:
             "has_spec": (fdir / "spec.md").exists(),
         })
     phases = []
-    for name in registry.get("phases", []):
+    for name in sorted(registry.get("phases", []), key=phase_key):
         record = read_json(root / "phases" / name / "phase.json", {}) or {}
         members = [f for f in features if f["phase"] == name]
         phases.append({

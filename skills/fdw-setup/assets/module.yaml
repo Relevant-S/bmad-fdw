@@ -35,6 +35,18 @@ client_name:
   default: "{project_name}"
   result: "{value}"
 
+project_stage:
+  prompt: "Is this a new build, or a project already partway through delivery?"
+  type: single-select
+  default: "greenfield"
+  options:
+    - value: "greenfield"
+      label: "New build — nothing shipped yet"
+    - value: "brownfield"
+      label: "Already in flight — some of it is live"
+  result: "{value}"
+  example: "Brownfield lets you start at the phase the project is actually on, and record what already exists"
+
 prototype_output_path:
   prompt: "Where should generated prototypes be written?"
   default: "{project-root}/prototypes"

@@ -59,10 +59,13 @@ After writing config, create any output directories that were configured. For fi
 
 ## Prepare the Module
 
-Config alone does not make this module usable. Five module-specific steps follow, in order. Resolve
-`{project-root}` and `{discovery_folder}` to real paths for all of them.
+Config alone does not make this module usable. The steps below follow in order — one of them is
+brownfield-only and is skipped for a new build. Resolve `{project-root}` and `{discovery_folder}` to
+real paths for all of them.
 
 ### Initialize the discovery store
+
+**Greenfield** (`project_stage` is `greenfield`, the default) — nothing to decide:
 
 ```bash
 uv run "{project-root}/.claude/skills/fdw-intake/scripts/fdw_state.py" init --root "{discovery_folder}"
@@ -72,8 +75,68 @@ Idempotent. It creates `registry.json`, the decisions, questions, glossary and a
 `sources/`, and **phase-1** — so the BA has a phase to scope into from the first minute. It also
 copies the state contract in as `CONTRACT.md`, which makes the store self-describing.
 
-If this fails, stop and say so. Every other skill in the module writes through that CLI, and a
-half-created store is worse than none.
+**Brownfield** (`project_stage` is `brownfield`) — two extra questions first, because a project
+already in flight does not start at phase 1 and a store that claims otherwise is wrong from
+the first minute.
+
+Ask, in the BA's own terms:
+
+> Which phase is the project actually on? Fractional labels are fine — `2.1` if you are mid-way
+> through a split second phase.
+
+Accept `3`, `phase-3`, `2.1`, `phase-2.1` and normalise to `phase-<label>`. Then pass it through:
+
+```bash
+uv run "{project-root}/.claude/skills/fdw-intake/scripts/fdw_state.py" init --root "{discovery_folder}" --phase "phase-2.1"
+```
+
+The store now knows about exactly one phase — the one the project is on. **Earlier phases are not
+created, and that is deliberate.** This module's hardest rule is that it never reports state it did
+not read, and inventing two closed phases with no features, no dates and no blocker counts would
+break it in the most damaging place: the blocker-count trend across phases is how the whole method
+is judged, and seeding it with fabricated zeroes makes it meaningless. Ordering still works —
+`fdw-phase` and `fdw-consistency` compare phases by their label, not by position in a list — so
+opening `phase-4` later, or even backfilling `phase-2`, sorts correctly.
+
+Say this out loud to the BA, in one line, so the absence does not look like a bug:
+
+> Started at phase-2.1. Earlier phases are not in the store — what already shipped goes in the
+> as-built baseline instead, which is the next question.
+
+### Record what already exists (brownfield only)
+
+Skip entirely for greenfield.
+
+A brownfield BA is not starting from nothing, and the module should not pretend otherwise. Ask:
+
+> Do you have anything describing what is already live? A previous PRD, a handover note, or just
+> tell me in a couple of sentences.
+
+Three ways this goes, and all of them are fine:
+
+- **They point at a document.** Read it and write a short baseline from it — what exists, in
+  features, not in implementation detail. Keep it to what a BA would need to know before speccing
+  the next thing.
+- **They describe it in the chat.** Use their words.
+- **They have nothing.** Say that is fine and move on. The baseline fills in at the first handoff.
+
+Then file it:
+
+```bash
+uv run "{project-root}/.claude/skills/fdw-intake/scripts/fdw_state.py" as-built-seed \
+  --root "{discovery_folder}" --file <your-summary.md> --phase "phase-2.1" --source "docs/prd-phase-2.md"
+```
+
+Use `--text "..."` instead of `--file` when they dictated it. The command stamps the section as
+recorded at setup and explicitly not verified by this module, which matters: everything else in the
+store traces to a quote or a signed-off design, and this does not. It refuses to overwrite a
+baseline that already has content.
+
+That baseline is what `fdw-design` reads for reproduce-as-is mode and what `fdw-elaborate` specs the
+next phase against, so five sentences here save an argument later.
+
+**If either command fails, stop and say so.** Every other skill in the module writes through that
+CLI, and a half-created store is worse than none.
 
 ### Confirm the shared state CLI resolves from every skill
 

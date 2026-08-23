@@ -292,3 +292,22 @@ def test_report_without_a_scan_names_the_command(tmp_path, store):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def test_phase_direction_is_judged_by_label_not_registry_position(store):
+    """A brownfield store's phases list can be built out of order. Comparing by position
+    would call a dependency on an earlier phase 'backwards' and miss the real violation."""
+    edit_registry(store, lambda r: r.update({"phases": ["phase-2", "phase-1"]}))
+    # F-001 (phase-1) depending on F-003 (phase-2) is a genuine backward dependency.
+    edit_registry(store, lambda r: r["features"][0].update({"depends_on": ["F-003"]}))
+    finding = next(f for f in run("scan", "--root", str(store))["hard_findings"]
+                   if f["kind"] == "backward-dependency")
+    assert "ships later" in finding["detail"]
+
+
+def test_a_dependency_on_a_genuinely_earlier_phase_is_not_flagged(store):
+    edit_registry(store, lambda r: r.update({"phases": ["phase-2", "phase-1"]}))
+    edit_registry(store, lambda r: r["features"][2].update({"depends_on": ["F-001"]}))
+    kinds_found = [f["kind"] for f in run("scan", "--root", str(store))["hard_findings"]]
+    assert "backward-dependency" not in kinds_found, \
+        "phase-2 depending on phase-1 is the normal shape of phased delivery"
