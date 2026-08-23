@@ -299,10 +299,18 @@ He never guesses. If he has not read something, he says so.
 
 **Say:** *"draw me this"* · *"prototype this feature"* · *"design F-003"* · *"reproduce the current screens"* · *"show me what this looks like"*
 
-**Reads:** the evidence for the feature, and your project's components.
-**Writes:** the prototype, the assumptions, the corrections log, and the empty-state findings.
+**Reads:** the evidence for the feature, and your project's real code.
+**Writes:** the prototype, the assumptions, the corrections log, the empty-state findings, and a record of where each screen was copied from.
 
 **Example.** You ask for the Academy screens. Two rounds of corrections later they are right, and the empty-state walk has found three steps nobody had thought about.
+
+**How it gets the look right.** On a product that already exists, it does not draw from imagination. It finds your application, finds the page most like the one it needs, and copies that as the starting point — the same colours, the same spacing, the same table style, because they are the same file. Then it changes only the part your feature changes.
+
+Before you see anything, it checks its own work: every screen has to name the real file it came from, and that file has to exist. If it drifted into inventing its own look, the check fails and it starts again. You should be correcting the feature, not the drawing.
+
+**It stays inside one feature.** One run, one feature. It will not build the rest of your app around it, and it will not invent a navigation menu — if the screens need a frame around them, it borrows your real one. Anything it draws that belongs to a different feature is treated as a mistake and blocked.
+
+**If it cannot find your application**, it will ask you where it lives rather than guessing. Tell it once and it remembers. It only starts from a blank page if you tell it there is genuinely nothing there yet.
 
 ---
 
@@ -531,6 +539,20 @@ It notices and stops. If it is a *corrected* version of a file you already used,
 ### The prototype will not run
 
 You need Node.js installed to run prototypes. Without it they are still generated, you just cannot click through them. You can still send the client packet.
+
+### The prototype does not look like our product
+
+Say *"check the grounding"*. It will tell you which screens are not traceable to a real file in your codebase, and rebuild those from the real thing. The usual cause is that it never found your application — see the next entry.
+
+### It says it cannot find my components
+
+The module looks in your project folder, then one level up, then in the folders beside it. That covers the common setup where the documentation lives in one folder and the application in another. If it still cannot find it, just tell it the path. It saves the answer, so you only say it once.
+
+Do not let it carry on without an answer on a project that already exists. It will draw something that looks like a redesign, and your client will react to the redesign instead of the feature.
+
+### It generated screens for a different feature
+
+That should now be blocked before you ever see it. If it happens, say *"check the grounding"* — the extra screens are reported by name and removed. Each run covers exactly one feature.
 
 ### Figma is not responding
 

@@ -33,7 +33,7 @@ this contract file, and `init` copies it into the store as `CONTRACT.md` so the 
         F-001-{slug}/
           feature.json         # the record (registry is the index)
           signal.md            # anchored evidence — no inference
-          design/              # fdw-design: prototype/, ux-notes.md, empty-state.md
+          design/              # fdw-design: prototype/, ux-notes.md, empty-state.md, grounding.json
           spec.md              # fdw-elaborate only — THE SANDBOX
           changes.md           # change records raised after approval
       client-packets/

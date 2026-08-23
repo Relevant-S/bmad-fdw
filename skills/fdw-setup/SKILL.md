@@ -157,9 +157,17 @@ uv run "{project-root}/.claude/skills/fdw-design/scripts/fdw_design.py" inventor
 ```
 
 Write the detected `component_root` into `component_library_path` and the detected framework and
-styling into `prototype_stack`, so the BA never answers a question the repo could answer. A
-`greenfield: true` result is a normal answer, not a failure — say that the first prototype will
-establish the component library rather than reuse one, and leave both values blank.
+styling into `prototype_stack`, so the BA never answers a question the repo could answer. Answering
+it *here* is worth the minute: `fdw-design` reads these values before it looks for anything itself,
+and a prototype that cannot find the real components is one that invents its own.
+
+A `verdict: "not_found"` result is a failed search, not a finding. The command widens past the
+project root to its parent and siblings — the common case is BMad installed in a `docs/` directory
+with the application beside it — so if it still found nothing, ask the BA outright where the
+application lives and put that answer in `component_library_path`. Only leave both values blank when
+the BA confirms there is no UI yet, and say plainly that the first prototype will therefore establish
+the component library rather than reuse one. On a `brownfield` project, blank values are a problem to
+resolve now, not a default to accept.
 
 ### Check what the module depends on
 

@@ -342,7 +342,9 @@ that this is what took output from "loose ends everywhere" to fast and good.
 
 | Capability | Outcome | Inputs | Outputs |
 | --- | --- | --- | --- |
-| Component discovery | Prototypes look like the real product from the first pass | `component_library_path`, project repo | Inventory of available components; list of gaps to build |
+| Grounding | Prototypes look like the real product from the first pass because they are cloned from it | `component_library_path`, project repo, its parent and siblings | Fidelity kit: stack, components, token files, ranked reference pages, run commands — recorded in `design/grounding.json` |
+| Fidelity verification | An ungrounded prototype is caught by a check, not by the client | `grounding.json`, prototype, cited sources | Pass/fail per rule: cited paths exist, token file hashes equal, styling vocabulary overlaps its source, comparison recorded |
+| Boundary enforcement | One feature stays one feature | Registry siblings, declared screens, prototype contents | Undeclared screens and invented chrome fail the gate |
 | Generate prototype | The BA has screens to react to within one turn | `signal.md`, feature.json, component inventory, `as-built.md` | Runnable prototype under `design/prototype/` |
 | Record assumptions | The AI's behavioural guesses are visible and challengeable, not buried in code | Generation run | `design/ux-notes.md` — numbered assumptions, each linked to the screen it affects |
 | Correction loop | 2–3 rounds take the prototype to "ideal", as observed in practice | BA comments ("wrong date input", "field missing", "blocks are squashed, needs sections") | Updated prototype + correction log appended to `ux-notes.md` |
@@ -974,6 +976,62 @@ matter: (a) does the Academy≈Events overlap get detected and correctly ordered
 blockers survive to `fdw-handoff`. Vadim named the second one as his own criterion. If the module can't move
 that number, it hasn't earned the switch from his manual method.
 
+
+### Grounding pattern added to fdw-design (2026-08-23)
+
+Run on a real brownfield engagement, `fdw-design` produced a prototype that shared the client's palette
+and nothing else: a single hand-written HTML file, 914 lines, 25 transcribed hex values, zero real
+components, and an invented navigation shell implying five features nobody had scoped. The notes were
+good — screens correctly marked as-is, real source files cited — which is what made it worth diagnosing
+rather than regenerating. Six causes, all in the skill:
+
+1. **Config was write-only.** Setup collected `component_library_path`, `prototype_stack`,
+   `prototype_output_path` and `project_stage`; no skill read any of them at design time.
+2. **A failed search reported itself as a verdict.** `inventory` searched a fixed candidate list under
+   the project root, found nothing because the application was a sibling directory, and returned
+   `greenfield: true` — which the skill described as "a normal answer, not a failure".
+3. **The inventory was too thin to ground anything.** A list of component names, no tokens, no layout
+   convention, no example of how a page in this product is composed. Stack detection read only the root
+   manifest, so every monorepo reported no framework.
+4. **The skill contained an unresolved contradiction** — reuse the real components, *and* produce
+   something the BA can open by double-clicking on a phone. The model resolved it silently toward
+   portability and rebuilt every primitive from memory.
+5. **The gate could not see fidelity.** It counted files, assumption ids, dated corrections and gaps.
+   All four passed. Nothing anywhere compared the output to the real product.
+6. **Nothing stated the boundary**, so the model supplied one. Drawing a screen needs something around
+   it; with no rule, it built the surroundings.
+
+The fix is a pattern, not a special case, and it is deliberately stack-agnostic — every rule keys off
+what the project turns out to have rather than off any named framework:
+
+- **A discovery ladder that cannot end in a guess.** Config first, then auto-detect, then widen to the
+  parent and siblings (BMad in `docs/` with the app beside it is the common case, not a quirk), then ask
+  the BA. `inventory` now returns `verdict: "not_found"` and never claims greenfield; greenfield is a
+  state the BA confirms by name in `grounding.json`.
+- **The fidelity kit instead of a name list** — stack with per-app run commands, components, token
+  source files, and real pages ranked by archetype (list, form, dialog, detail, empty). The reference
+  page is the highest-value item: it carries shell, spacing, table style and empty state already correct.
+- **Clone, then change.** Take the nearest real page of the same archetype and change only what the
+  feature changes. Copy the token file verbatim; retyping it is what produces right colours and wrong
+  everything else.
+- **`design/grounding.json`**, a machine-checked record of where each screen came from. `check` verifies
+  every claim against the filesystem: cited paths exist, the copied token file hashes equal to its
+  original, each screen's styling vocabulary overlaps the page it cites, no undeclared screen is present,
+  chrome is borrowed from a named layout file or absent. Against the failing artifact the overlap metric
+  scored 1.6% on all three cited sources and counted 103 hand-authored CSS rules.
+- **The contradiction is resolved by ranking.** Fidelity outranks portability; phone review is served by
+  running the real app beside the prototype, not by degrading the artifact.
+- **The prototype never writes into the application's source tree** (decided with the user). It lives at
+  `prototype_output_path`, adds files only, and is deletable — so grounding is achieved by extraction,
+  never by importing across a build boundary.
+
+Where a project has no shared class vocabulary at all — CSS modules, styled-components — the overlap
+metric reports `null` rather than a score, and the required side-by-side comparison carries the weight.
+A check that cannot measure says so instead of passing.
+
+`references/grounding.md` is the authority; `references/brownfield.md` now loads on a signal
+(`project_stage`, a non-empty `as-built.md`, or a feature that changes shipped behaviour) rather than on
+the model's judgement, which is why the reproduce-as-is discipline was optional in practice.
 
 **Next steps:**
 
