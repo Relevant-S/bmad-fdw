@@ -316,16 +316,28 @@ Before you see anything, it checks its own work: every screen has to name the re
 
 ### `fdw-client-packet` — the document the client signs
 
-**What it does.** Builds a single web page for the client: the screens, a plain description, the assumptions as yes/no questions, and what you need from them. Then records their reply and the sign-off.
+**What it does.** Builds a single web page for the client: pictures of the screens, a plain description, the assumptions as yes/no questions, and what you need from them. The client answers in the page itself and sends the answers back. Then it reads those answers in and records the sign-off.
 
 **When to use it.** When the prototype is ready to show. And again when they reply.
 
 **Say:** *"send this to the client"* · *"build the client packet"* · *"prepare the review"* · *"the client came back on Academy"*
 
 **Reads:** the prototype and the assumptions.
-**Writes:** the client page, and their recorded answers and approval.
+**Writes:** the client page, the screenshots, and their recorded answers and approval.
 
 **Example.** It produces one file you can email. It refuses to send anything containing internal wording, and tells you exactly which sentence to change.
+
+**The pictures.** It takes the screenshots itself, using a browser you already have — you never take them by hand. Every screen in the feature, always the same size, always the whole page rather than just the top of it. Two people building the same packet get the same pictures. If there is no suitable browser on your machine it says so, and the packet describes the screens instead of showing them.
+
+**How the client replies.** Under each question there is an answer box; next to each assumption, *That's right* / *Not quite*. At the end they type their name and say whether the screens are right. Their answers save as they type, so they can start on a phone and finish later.
+
+When they press **Finish**, the page gives them a block of text to copy into their reply email — or a file to download if they prefer attachments. It also shows them, in plain words, exactly what they are sending. The page never sends anything anywhere by itself, which is worth saying to them: it is safe to open and it is not tracking them.
+
+**Several people can answer.** Send the same file to as many stakeholders as you like. Each one replies separately, and you feed all their replies in together. You get one merged picture with each answer attributed to whoever gave it.
+
+**When two people disagree**, it will not choose for you. It shows you both answers side by side and leaves that question open. Guessing which stakeholder to believe is exactly the mistake that ends up in a spec.
+
+**Sign-off is not offered until it is real** — every question you asked has an answer, nothing is in conflict, and someone actually said yes. If it is holding back, it tells you which of those is missing.
 
 ---
 
@@ -553,6 +565,20 @@ Do not let it carry on without an answer on a project that already exists. It wi
 ### It generated screens for a different feature
 
 That should now be blocked before you ever see it. If it happens, say *"check the grounding"* — the extra screens are reported by name and removed. Each run covers exactly one feature.
+
+### It says it cannot capture the screenshots
+
+It needs Chrome, Chromium, Edge or Brave on your machine — any one of them. If you have one but it cannot find it, tell it where: set `CHROME_PATH` to the browser, or just say where it is and it will use that.
+
+You can still send the packet without pictures. It will describe the screens and offer the client a walkthrough instead. Say that to them plainly rather than letting them wonder where the images went.
+
+### The client replied but nothing was recorded
+
+Their answers only come back if they used the Finish button and sent you the block it produced. If they just wrote you an email in their own words instead, that is fine — say *"the client came back on Academy"* and hand over the email. It gets read in the same way, and every answer keeps a trace back to what they actually wrote.
+
+### Two stakeholders gave different answers
+
+That is reported, not resolved. You will see both answers with names against them, and that question stays open. Go back to them and get one answer — or make the call yourself and record it. Nothing will quietly pick one for you.
 
 ### Figma is not responding
 

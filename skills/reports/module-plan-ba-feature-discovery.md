@@ -1033,6 +1033,76 @@ A check that cannot measure says so instead of passing.
 (`project_stage`, a non-empty `as-built.md`, or a feature that changes shipped behaviour) rather than on
 the model's judgement, which is why the reproduce-as-is discipline was optional in practice.
 
+### Capture and the response loop added to fdw-client-packet (2026-08-24)
+
+Two defects in how a good packet got produced, reported from a real engagement.
+
+**Capture was improvised.** The script accepted `--screenshot label=path.png` and had no opinion on
+where the PNGs came from, so the run reached for whichever browser-automation MCP happened to be
+installed locally. A BA without it gets a different packet or none — unacceptable for the one
+artifact a paying client actually sees.
+
+The fix is a capture harness that ships with the module, `scripts/fdw_capture.py`, with no
+dependency the BA has to install:
+
+- **Served, not opened.** The prototype goes over loopback HTTP from the stdlib, because `file://`
+  resolves relative assets differently and would quietly produce a different packet.
+- **Whatever browser is already there.** Chrome, Chromium, Edge or Brave, found through a documented
+  search order with `CHROME_PATH` as the override, driven over the DevTools protocol through a
+  WebSocket client written out in ~60 lines of stdlib. No npm, no MCP, no third-party package.
+- **The capture list is not a judgment call.** `grounding.json` declares the feature's screens and
+  `fdw-design` already refuses to let an undeclared one exist, so the capture list and the feature
+  boundary are the same list. Screens sharing a file are clipped to their own region; a screen with a
+  file to itself is taken whole, so a borrowed shell stays in the picture.
+- **Fixed optics** — 1280×900, device scale factor 2, `captureBeyondViewport` so a long screen is
+  captured whole rather than cropped at the fold.
+- **No browser is a stated outcome**, not a silent one: the packet still renders and describes the
+  screens, and the skill must say so rather than implying pictures exist.
+
+**There was no defined way for the client to respond.** Two mechanisms were weighed — a reply built
+into the HTML packet, and a Figma node published through the Figma MCP with a comment sync. Figma
+wins parallel commenting decisively and loses everything else:
+
+| | HTML packet | Figma node |
+| --- | --- | --- |
+| BA setup | none — it is the file already being sent | account, MCP configured and authenticated, a file per engagement |
+| Non-technical client | reads as a document, answers inline | a designer's canvas, sign-in required to comment |
+| Parallel stakeholders | each replies separately, merged on ingest | live and shared |
+| Response fidelity | every answer arrives bound to its question | free text at canvas coordinates, bound to nothing |
+| When unavailable | cannot be — it is the artifact | breaks at the client, mid-review |
+
+Two things decided it. Figma would have reintroduced the exact defect being fixed in the capture
+half — a leg of the workflow depending on whichever MCP happens to be installed — except on the
+client's side of the engagement, where it cannot be recovered. And a comment pinned to a canvas
+needs an LLM judgment call to become "this question is answered", which throws away the provenance
+the whole module is built on.
+
+The round trip, chosen and built:
+
+- **Out.** The packet carries agree/not-quite per assumption, an answer box per question, a name, and
+  one *are these screens right* control. Answers persist in the client's own browser as they type.
+  Finishing produces a copyable block — copy-paste into an email removes the attachment barrier
+  entirely — plus a plain-language summary of what they are sending. The page reaches nothing on the
+  network and submits nothing on its own.
+- **Opaque tokens.** The reply travels labelled `q1`, `a2`. No internal id is ever in the client's
+  hands, not even inside the block. The `.map.json` sidecar, already internal-only, becomes the join
+  table.
+- **In.** `sync` takes one reply per stakeholder — pasted block, downloaded file, or that block buried
+  in an email — files them beside the packet so every quote traces to something on disk, and emits
+  `question-close` commands carrying the client's own words as the quote.
+- **Conflicts are reported, never resolved.** Two stakeholders answering differently leaves the
+  question open with both answers named. A script picking one would be inventing a client decision.
+- **Disagreed assumptions are corrections**, routed back to `fdw-design`, not closed questions.
+- **Sign-off is withheld** until every question asked has an answer, nothing is in conflict, and
+  somebody actually said yes. Silence is not sign-off, and one *not yet* holds the feature.
+- **`sync` writes no feature state**, in keeping with the single-writer rule; it emits the commands.
+
+One defect found in build and worth remembering: the reply script's `join('\n')` was written into a
+non-raw Python string, so the rendered page carried a real newline inside a JS string literal — a
+syntax error that kills the whole reply block silently, in the client's browser, where nothing
+upstream would ever notice. The loop is now tested against a real headless browser end to end: fill
+the form, click Finish, read the block, sync it back.
+
 **Next steps:**
 
 1. Build each skill using **Build an Agent (BA)** or **Build a Workflow (BW)** — share this plan document as context

@@ -7,7 +7,7 @@
 
   "sections": [
     {
-      "_comment": "One per screen. `screen` is the client-facing screen name and is also the key used by --screenshot to attach an image.",
+      "_comment": "One per screen. `screen` is the client-facing screen name — the words the client would use — and is also how a captured image is attached: fdw_capture.py names each shot with the screen title from the design notes, and --shots matches on it.",
       "screen": "Course list",
       "what_you_see": "Every course your organisation offers, newest first, with the number of enrolled learners against each one.",
       "how_it_works": "Before any courses exist, this page invites you to create the first one rather than showing an empty table. Selecting a course opens it."
@@ -33,7 +33,7 @@
 
   "questions": [
     {
-      "_comment": "`ref` is the internal question id. It is written to the sidecar map so answers can be recorded against the right question, and it is never rendered into the page.",
+      "_comment": "`ref` is the internal question id. It goes to the sidecar map so the reply can be matched back to the right question; the page labels this question q1 and the client never sees the ref. Every question asked here must be answered before sign-off is offered, so ask only what genuinely blocks progress.",
       "ref": "F-001-Q-02",
       "question": "What should each tab on a course page contain?",
       "context": "We've proposed Overview, Sessions and Certification. If your team thinks about courses differently, now is the time to say so."

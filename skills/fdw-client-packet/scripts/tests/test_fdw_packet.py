@@ -6,6 +6,7 @@
 """Tests for fdw_packet.py — gathering, the vocabulary gate, and rendering the client packet."""
 
 import base64
+import importlib.util
 import json
 import subprocess
 import sys
@@ -188,8 +189,18 @@ def test_packet_is_self_contained_and_carries_no_ids(tmp_path, store):
     assert "F-001" not in page and "Q-01" not in page
     assert "Acme" in page and "2026-03-01" in page
     assert "prefers-color-scheme" in page and "width=device-width" in page
-    for absent in ("http://", "https://", "<script"):
+    for absent in ("http://", "https://", "src="):
         assert absent not in page
+
+
+def test_the_packet_never_phones_home(tmp_path, store):
+    """It carries a reply form, so it carries script. A document going to a client must still
+    reach nothing and submit nothing on its own — that is what makes it safe to open."""
+    out = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path))
+    page = (store / out["packet"]).read_text()
+    for absent in ("fetch(", "XMLHttpRequest", "navigator.sendBeacon", "<form", "action=", "import("):
+        assert absent not in page, f"{absent} would send the client's answers somewhere"
+    assert "localStorage" in page, "a half-finished reply must survive a closed tab"
 
 
 def test_the_id_map_is_written_beside_the_packet_and_marked_internal(tmp_path, store):
@@ -234,3 +245,244 @@ def test_authoring_comments_are_not_linted_but_are_never_rendered(tmp_path, stor
     out = run("render", "--root", str(store), "--id", "F-001",
               "--content", content(tmp_path, _comment="Remember: F-001 is unconfirmed, sizing XL."))
     assert "F-001" not in (store / out["packet"]).read_text()
+
+
+# ---------------------------------------------------------------- screenshots
+
+
+def manifest(tmp_path, *shots):
+    files = []
+    for screen, title in shots:
+        png = tmp_path / f"{screen}.png"
+        png.write_bytes(PNG)
+        files.append({"screen": screen, "title": title, "kind": "new", "file": str(png), "bytes": len(PNG)})
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"feature": "F-001", "shots": files}))
+    return str(path)
+
+
+def test_a_capture_manifest_attaches_images_by_the_client_facing_title(tmp_path, store):
+    """The BA names sections in the client's language; the harness names files by screen id.
+    Matching them by hand every time is the improvisation this replaces."""
+    out = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path),
+              "--shots", manifest(tmp_path, ("S1", "Course list")))
+    assert out["screenshots"] == 1
+    assert "data:image/png;base64," in (store / out["packet"]).read_text()
+
+
+def test_a_manifest_naming_a_missing_file_fails_rather_than_rendering_a_gap(tmp_path, store):
+    path = tmp_path / "m.json"
+    path.write_text(json.dumps({"shots": [{"screen": "S1", "title": "Course list",
+                                           "file": str(tmp_path / "gone.png")}]}))
+    payload = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path),
+                  "--shots", str(path), expect_ok=False)
+    assert "gone.png" in " ".join(payload["errors"])
+
+
+# ---------------------------------------------------------------- the reply block
+
+
+def test_the_reply_block_labels_answers_with_opaque_tokens_only(tmp_path, store):
+    out = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path))
+    page = (store / out["packet"]).read_text()
+    assert "data-token='q1'" in page and "data-token='a1'" in page
+    assert "F-001-Q-01" not in page, "the reply must travel labelled q1, never with an internal id"
+    mapping = json.loads((store / out["map"]).read_text())
+    assert mapping["tokens"]["q1"]["ref"] == "F-001-Q-01"
+    assert mapping["tokens"]["a1"]["kind"] == "assumption"
+
+
+def test_reply_can_be_left_out_for_an_archive_copy(tmp_path, store):
+    out = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path), "--no-reply")
+    page = (store / out["packet"]).read_text()
+    assert "data-token" not in page and "<script" not in page
+    assert out["reply_enabled"] is False
+
+
+# ---------------------------------------------------------------- responses in
+
+
+def reply(tmp_path, name, packet, *, answers=None, approve="yes", other="", who=None, encoded=True):
+    payload = {"v": 1, "packet": packet, "from": name, "at": "2026-03-02",
+               "approve": approve, "other": other, "answers": answers or {}}
+    body = json.dumps(payload)
+    if encoded:
+        body = "Thanks — here it is.\n\nFDW1:" + base64.b64encode(body.encode()).decode() + "\n\nBest, " + name
+    path = tmp_path / f"reply-{who or name}.txt"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+def rendered(tmp_path, store, **kw):
+    return run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path, **kw))
+
+
+def test_a_single_reply_closes_the_question_and_approves(tmp_path, store):
+    out = rendered(tmp_path, store)
+    packet = Path(out["packet"]).name
+    answer = reply(tmp_path, "Sasha", packet,
+                   answers={"q1": {"text": "Overview and Sessions only."},
+                            "a1": {"verdict": "agree"}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert result["answered"][0]["ref"] == "F-001-Q-01"
+    assert result["answered"][0]["from"] == "Sasha"
+    assert result["blocked_by"] == []
+    assert any("question-close" in c and "F-001-Q-01" in c for c in result["run"])
+    assert any("--status design-approved" in c for c in result["run"])
+
+
+def test_the_clients_own_words_become_the_quote(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Overview and Sessions only."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert '--quote "Overview and Sessions only."' in " ".join(result["run"])
+
+
+def test_two_people_answering_differently_is_a_conflict_not_a_decision(tmp_path, store):
+    """Picking one would invent a client decision. The whole module rests on not doing that."""
+    out = rendered(tmp_path, store)
+    packet = Path(out["packet"]).name
+    a = reply(tmp_path, "Sasha", packet, answers={"q1": {"text": "Two tabs."}})
+    b = reply(tmp_path, "Ines", packet, answers={"q1": {"text": "Three tabs, keep Certification."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", a, "--response", b)
+    assert result["answered"] == []
+    assert result["conflicts"][0]["answers"][0]["from"] in ("Sasha", "Ines")
+    assert not any("question-close" in c for c in result["run"])
+    assert any("disagree with each other" in b for b in result["blocked_by"])
+
+
+def test_two_people_agreeing_still_closes_the_question(tmp_path, store):
+    out = rendered(tmp_path, store)
+    packet = Path(out["packet"]).name
+    a = reply(tmp_path, "Sasha", packet, answers={"q1": {"text": "Two tabs."}})
+    b = reply(tmp_path, "Ines", packet, answers={"q1": {"text": "Two tabs."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", a, "--response", b)
+    assert len(result["answered"]) == 1
+
+
+def test_a_disagreed_assumption_is_a_correction_for_the_designer(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Two tabs."},
+                            "a1": {"verdict": "disagree", "text": "Publishing needs one session."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert result["corrections"][0]["instead"] == ["Publishing needs one session."]
+    assert "fdw-design" in result["then"]
+
+
+def test_an_unanswered_question_blocks_sign_off(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name, answers={"a1": {"verdict": "agree"}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert result["unanswered"] == ["What should each tab contain?"]
+    assert not any("design-approved" in c for c in result["run"])
+
+
+def test_silence_is_not_sign_off(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Two tabs."}}, approve="")
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert any("Silence is not sign-off" in b for b in result["blocked_by"])
+
+
+def test_one_not_yet_holds_the_whole_feature(tmp_path, store):
+    out = rendered(tmp_path, store)
+    packet = Path(out["packet"]).name
+    a = reply(tmp_path, "Sasha", packet, answers={"q1": {"text": "Two tabs."}}, approve="yes")
+    b = reply(tmp_path, "Ines", packet, answers={}, approve="not-yet", who="ines")
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", a, "--response", b)
+    assert any("Ines" in x for x in result["blocked_by"])
+    assert not any("design-approved" in c for c in result["run"])
+
+
+def test_a_raw_json_reply_works_as_well_as_the_pasted_block(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Two tabs."}}, encoded=False)
+    assert len(run("sync", "--root", str(store), "--id", "F-001", "--response", answer)["answered"]) == 1
+
+
+def test_a_reply_to_a_different_packet_is_refused(tmp_path, store):
+    rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", "2020-01-01-something-else.html", answers={"q1": {"text": "x"}})
+    payload = run("sync", "--root", str(store), "--id", "F-001", "--response", answer, expect_ok=False)
+    assert "not" in " ".join(payload["errors"]).lower()
+
+
+def test_replies_are_filed_so_every_quote_is_traceable(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name, answers={"q1": {"text": "Two tabs."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    filed = json.loads((store / result["recorded"]).read_text())
+    assert filed["replies"][0]["from"] == "Sasha"
+    run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    again = json.loads((store / result["recorded"]).read_text())
+    assert len(again["replies"]) == 1, "re-syncing the same reply must not duplicate it"
+
+
+def test_sync_writes_no_feature_state_itself(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name, answers={"q1": {"text": "Two tabs."}})
+    before = (store / "registry.json").read_text()
+    run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert (store / "registry.json").read_text() == before
+
+
+# ---------------------------------------------------------------- the loop, for real
+
+
+def _browser():
+    spec = importlib.util.spec_from_file_location(
+        "fdw_capture", Path(__file__).resolve().parent.parent / "fdw_capture.py")
+    cap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cap)
+    return cap, cap.find_browser(None)[0]
+
+
+CAP, BROWSER = _browser()
+
+
+@pytest.mark.skipif(BROWSER is None, reason="no Chromium-family browser here")
+def test_the_reply_actually_runs_in_a_browser_and_syncs_back(tmp_path, store):
+    """The reply is script running on someone else's machine at the far end of an email. A
+    broken string literal there fails silently in front of the client and nothing upstream
+    notices — so the loop is closed here against a real browser."""
+    out = rendered(tmp_path, store)
+    page = store / out["packet"]
+    browser = CAP.Browser(BROWSER, 1, (1280, 900))
+    try:
+        ws = browser.ws
+        ws.call("Page.navigate", {"url": page.resolve().as_uri()})
+        ws.wait_for("Page.loadEventFired", 20)
+
+        def js(expression):
+            result = ws.call("Runtime.evaluate", {"expression": expression, "returnByValue": True})
+            assert "exceptionDetails" not in result, result.get("exceptionDetails")
+            return result["result"].get("value")
+
+        assert js("typeof PACKET") == "string", "the reply script did not parse"
+        js("""(function(){
+          document.querySelector('[data-token="q1"][data-part="text"]').value='Two tabs only.';
+          document.querySelector('[data-token="a1"][value="disagree"]').checked=true;
+          document.querySelector('[data-token="a1"][data-part="text"]').value='It needs one session.';
+          document.querySelector('[data-field="name"]').value='Sasha';
+          document.querySelector('[data-field="approve"][value="yes"]').checked=true;
+          document.getElementById('fdw-finish').click();
+        })()""")
+        blob = js("document.getElementById('fdw-blob').value")
+        summary = js("document.getElementById('fdw-summary').textContent")
+    finally:
+        browser.kill()
+
+    assert blob.startswith("FDW1:")
+    assert "Sasha" in summary and "Two tabs only." in summary
+    assert "F-001" not in blob and "F-001" not in summary
+
+    reply_file = tmp_path / "from-client.txt"
+    reply_file.write_text(f"Hi — see below.\n\n{blob}\n\nThanks, Sasha", encoding="utf-8")
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", str(reply_file))
+    assert result["answered"][0]["answer"] == "Two tabs only."
+    assert result["corrections"][0]["instead"] == ["It needs one session."]
+    assert any("--status design-approved" in c for c in result["run"])

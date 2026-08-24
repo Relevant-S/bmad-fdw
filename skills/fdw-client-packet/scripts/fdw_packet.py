@@ -208,6 +208,16 @@ def cmd_render(args: argparse.Namespace) -> None:
         )
 
     images: dict[str, str] = {}
+    for shot in (read_json(Path(args.shots).resolve(), {}) or {}).get("shots", []) if args.shots else []:
+        file = Path(shot["file"])
+        if not file.exists():
+            die([f"The capture manifest names {file}, which is not there. Re-run fdw_capture.py shots."])
+        mime = mimetypes.guess_type(file.name)[0] or "image/png"
+        encoded = f"data:{mime};base64," + base64.b64encode(file.read_bytes()).decode()
+        # Keyed by the client-facing title the BA wrote and by the screen id, so the content JSON
+        # can use either without the BA hand-matching filenames to sections.
+        images[shot.get("title") or shot["screen"]] = encoded
+        images[shot["screen"]] = encoded
     for pair in args.screenshot or []:
         label, _, path = pair.partition("=")
         file = Path(path).expanduser().resolve()
@@ -221,13 +231,25 @@ def cmd_render(args: argparse.Namespace) -> None:
     out_dir = root / "phases" / entry["phase"] / "client-packets"
     out_dir.mkdir(parents=True, exist_ok=True)
     page = out_dir / f"{stamp}-{slug}.html"
-    page.write_text(render(content, images, stamp, args.client), encoding="utf-8")
+
+    # Opaque per-packet tokens. The client's reply travels labelled q1/a1, so answers come back
+    # bound to the question that was asked without a single internal id ever leaving the building.
+    tokens: dict[str, dict[str, Any]] = {}
+    for i, item in enumerate(content.get("questions", []), 1):
+        tokens[f"q{i}"] = {"kind": "question", "ref": item.get("ref"), "asked": item.get("question")}
+    for i, item in enumerate(content.get("assumptions", []), 1):
+        tokens[f"a{i}"] = {"kind": "assumption", "we_assumed": item.get("we_assumed")}
+
+    page.write_text(render(content, images, stamp, args.client, page.name, not args.no_reply),
+                    encoding="utf-8")
 
     # Question ids must map answers back to features but must never appear in the packet.
     mapping = {
         "feature": entry["id"],
         "packet": page.name,
         "date": stamp,
+        "reply_enabled": not args.no_reply,
+        "tokens": tokens,
         "questions": [
             {"ref": q.get("ref"), "asked": q.get("question")}
             for q in content.get("questions", [])
@@ -243,7 +265,8 @@ def cmd_render(args: argparse.Namespace) -> None:
             "packet": str(page.relative_to(root)),
             "map": str(map_file.relative_to(root)),
             "questions_asked": len(mapping["questions"]),
-            "screenshots": len(images),
+            "screenshots": len({v for v in images.values()}),
+            "reply_enabled": not args.no_reply,
             "jargon_allowed": bool(args.allow_jargon),
             "send": "The .map.json is internal — send the .html only.",
         }
@@ -291,14 +314,105 @@ li{margin-bottom:11px}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);
  color:var(--muted);font-size:13px;font-family:ui-sans-serif,sans-serif}
 @media(max-width:600px){body{padding:18px 14px}h1{font-size:23px}.intro{font-size:17px}}
+.reply{font-family:ui-sans-serif,-apple-system,'Segoe UI',sans-serif;font-size:15px;margin-top:10px}
+.reply label{display:inline-flex;align-items:center;gap:6px;margin-right:16px;cursor:pointer}
+.reply textarea,.reply input[type=text]{width:100%;font:inherit;color:inherit;background:var(--bg);
+ border:1px solid var(--line);border-radius:7px;padding:9px 11px;margin-top:7px}
+.reply textarea{min-height:74px;resize:vertical}
+.send{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-top:14px;
+ font-family:ui-sans-serif,-apple-system,sans-serif}
+.send h3{margin:0 0 8px;font-size:18px}
+button{font:inherit;font-family:ui-sans-serif,-apple-system,sans-serif;background:var(--accent);color:#fff;
+ border:0;border-radius:8px;padding:11px 18px;cursor:pointer;margin:4px 8px 4px 0}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+#fdw-out{display:none;margin-top:14px}
+#fdw-out textarea{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;min-height:120px;
+ word-break:break-all}
+#fdw-summary{white-space:pre-wrap;background:var(--soft);border-radius:8px;padding:12px 14px;margin-top:10px;
+ font-size:14px}
+.saved{color:var(--muted);font-size:13px;margin-left:4px}
+"""
+
+REPLY_JS = r"""
+(function(){
+ var key='fdw-reply:'+PACKET, form=document.getElementById('fdw-form');
+ if(!form) return;
+ function fields(){return form.querySelectorAll('[data-token],[data-field]');}
+ function load(){
+  try{var saved=JSON.parse(localStorage.getItem(key)||'{}');
+   fields().forEach(function(el){
+    var k=el.dataset.token?el.dataset.token+':'+(el.dataset.part||'text'):el.dataset.field;
+    if(saved[k]===undefined) return;
+    if(el.type==='radio') el.checked=(el.value===saved[k]); else el.value=saved[k];
+   });}catch(e){}
+ }
+ function save(){
+  var out={};
+  fields().forEach(function(el){
+   var k=el.dataset.token?el.dataset.token+':'+(el.dataset.part||'text'):el.dataset.field;
+   if(el.type==='radio'){ if(el.checked) out[k]=el.value; } else if(el.value) out[k]=el.value;
+  });
+  try{localStorage.setItem(key,JSON.stringify(out));}catch(e){}
+  var note=document.getElementById('fdw-saved');
+  if(note){note.textContent='Saved on this device';}
+ }
+ form.addEventListener('input',save); form.addEventListener('change',save); load();
+
+ function collect(){
+  var answers={};
+  fields().forEach(function(el){
+   if(!el.dataset.token) return;
+   if(el.type==='radio' && !el.checked) return;
+   if(!el.value) return;
+   var slot=answers[el.dataset.token]||(answers[el.dataset.token]={});
+   slot[el.dataset.part||'text']=el.value;
+  });
+  var f={};
+  fields().forEach(function(el){ if(el.dataset.field && el.value && (el.type!=='radio'||el.checked)) f[el.dataset.field]=el.value; });
+  return {v:1,packet:PACKET,from:f.name||'',at:new Date().toISOString().slice(0,10),
+          approve:f.approve||'',other:f.other||'',answers:answers};
+ }
+ function encode(o){return 'FDW1:'+btoa(unescape(encodeURIComponent(JSON.stringify(o))));}
+ function readable(o){
+  var lines=['From: '+(o.from||'(no name given)'),'Date: '+o.at,
+             'Are the screens right? '+(o.approve==='yes'?'Yes, go ahead':(o.approve==='not-yet'?'Not yet':'(not answered)'))];
+  LABELS.forEach(function(l){
+   var a=o.answers[l.token]; if(!a) return;
+   lines.push('');lines.push(l.label);
+   if(a.verdict) lines.push('  '+(a.verdict==='agree'?'Agreed':'Not quite'));
+   if(a.text) lines.push('  '+a.text);
+  });
+  if(o.other){lines.push('');lines.push('Anything else');lines.push('  '+o.other);}
+  return lines.join('\n');
+ }
+ document.getElementById('fdw-finish').addEventListener('click',function(){
+  var data=collect(), box=document.getElementById('fdw-out');
+  document.getElementById('fdw-blob').value=encode(data);
+  document.getElementById('fdw-summary').textContent=readable(data);
+  box.style.display='block'; box.scrollIntoView({behavior:'smooth',block:'start'});
+ });
+ document.getElementById('fdw-copy').addEventListener('click',function(){
+  var t=document.getElementById('fdw-blob'); t.select(); t.setSelectionRange(0,99999);
+  try{document.execCommand('copy');}catch(e){}
+  if(navigator.clipboard) navigator.clipboard.writeText(t.value);
+  this.textContent='Copied — now paste it into your reply';
+ });
+ document.getElementById('fdw-download').addEventListener('click',function(){
+  var blob=new Blob([document.getElementById('fdw-blob').value],{type:'text/plain'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  a.download=PACKET.replace(/\.html$/,'')+'-reply.txt'; a.click();
+ });
+})();
 """
 
 
-def render(content: dict[str, Any], images: dict[str, str], stamp: str, client: str | None) -> str:
+def render(content: dict[str, Any], images: dict[str, str], stamp: str, client: str | None,
+           packet_name: str = "", reply: bool = True) -> str:
     out = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width,initial-scale=1'>",
-        f"<title>{esc(content['headline'])}</title><style>{CSS}</style></head><body><div class='wrap'>",
+        f"<title>{esc(content['headline'])}</title><style>{CSS}</style></head><body>"
+        f"<div class='wrap' id='fdw-form'>",
         f"<h1>{esc(content['headline'])}</h1>",
         f"<div class='meta'>{esc(client) + ' · ' if client else ''}{esc(stamp)}</div>",
         f"<div class='intro'>{esc(content['intro'])}</div>",
@@ -317,29 +431,265 @@ def render(content: dict[str, Any], images: dict[str, str], stamp: str, client: 
                 out.append(f"<div class='label'>How it works</div><p>{esc(section['how_it_works'])}</p>")
             out.append("</div>")
 
+    labels: list[dict[str, str]] = []
     if content.get("assumptions"):
         out.append("<h2>Things we've assumed — please confirm</h2>")
-        for item in content["assumptions"]:
+        for i, item in enumerate(content["assumptions"], 1):
+            token = f"a{i}"
             out.append(
                 f"<div class='assume'><div>{esc(item.get('we_assumed', ''))}</div>"
                 + (f"<div class='w'>{esc(item['why_it_matters'])}</div>" if item.get("why_it_matters") else "")
-                + "</div>"
             )
+            if reply:
+                labels.append({"token": token, "label": f"We assumed: {item.get('we_assumed', '')}"})
+                out.append(
+                    f"<div class='reply'>"
+                    f"<label><input type='radio' name='{token}' value='agree' data-token='{token}' "
+                    f"data-part='verdict'> That's right</label>"
+                    f"<label><input type='radio' name='{token}' value='disagree' data-token='{token}' "
+                    f"data-part='verdict'> Not quite</label>"
+                    f"<textarea data-token='{token}' data-part='text' "
+                    f"placeholder='If not quite, what should it be?'></textarea></div>")
+            out.append("</div>")
 
     if content.get("questions"):
         out.append("<h2>What we need from you</h2>")
         for i, item in enumerate(content["questions"], 1):
+            token = f"q{i}"
             out.append(
                 f"<div class='ask'><div class='q'>{i}. {esc(item.get('question', ''))}</div>"
                 + (f"<div class='c'>{esc(item['context'])}</div>" if item.get("context") else "")
-                + "</div>"
             )
+            if reply:
+                labels.append({"token": token, "label": f"Q{i}. {item.get('question', '')}"})
+                out.append(
+                    f"<div class='reply'><textarea data-token='{token}' data-part='text' "
+                    f"placeholder='Your answer'></textarea></div>")
+            out.append("</div>")
 
     out.append(f"<h2>Next steps</h2><div class='next'>{esc(content['next_steps'])}</div>")
+
+    if reply:
+        out.append(
+            "<h2>Send us your answers</h2>"
+            "<div class='send'>"
+            "<div class='reply'>"
+            "<div>Your name <span id='fdw-saved' class='saved'></span></div>"
+            "<input type='text' data-field='name' placeholder='So we know who said what'>"
+            "<div style='margin-top:14px'>Anything else we should know?</div>"
+            "<textarea data-field='other' placeholder='Anything at all — however small'></textarea>"
+            "<div style='margin-top:14px'>Are these screens right?</div>"
+            "<label><input type='radio' name='fdw-approve' value='yes' data-field='approve'> "
+            "Yes, go ahead</label>"
+            "<label><input type='radio' name='fdw-approve' value='not-yet' data-field='approve'> "
+            "Not yet</label>"
+            "</div>"
+            "<div style='margin-top:16px'>"
+            "<button type='button' id='fdw-finish'>Finish and prepare my reply</button></div>"
+            "<div id='fdw-out'>"
+            "<h3>Two ways to send it</h3>"
+            "<p>Copy the block below and paste it into your reply — that's all we need. "
+            "Or download it and attach it.</p>"
+            "<textarea id='fdw-blob' readonly></textarea>"
+            "<div><button type='button' id='fdw-copy'>Copy</button>"
+            "<button type='button' class='ghost' id='fdw-download'>Download instead</button></div>"
+            "<h3 style='margin-top:18px'>What you're sending</h3>"
+            "<div id='fdw-summary'></div>"
+            "</div></div>"
+            "<footer style='margin-top:8px'>Your answers stay in this browser until you send them. "
+            "Nothing is submitted anywhere on its own. If you'd rather just write us an email, do that "
+            "instead — it works just as well.</footer>")
     if content.get("how_to_view"):
         out.append(f"<footer>{esc(content['how_to_view'])}</footer>")
-    out.append("</div></body></html>")
+    if reply:
+        out.append(
+            "</div><script>var PACKET=" + json.dumps(packet_name)
+            + ";var LABELS=" + json.dumps(labels, ensure_ascii=False) + ";" + REPLY_JS + "</script></body></html>")
+    else:
+        out.append("</div></body></html>")
     return "\n".join(out)
+
+
+
+# ---------------------------------------------------------------- responses in
+
+
+def state_cli() -> str:
+    """The shared state CLI ships inside fdw-intake, a sibling once installed. Resolve a real
+    path so the commands printed below are ones the BA can actually paste."""
+    sibling = Path(__file__).resolve().parents[2] / "fdw-intake" / "scripts" / "fdw_state.py"
+    return f"uv run {sibling}" if sibling.exists() else \
+        "uv run {skill-root}/../fdw-intake/scripts/fdw_state.py"
+
+
+def parse_response(raw: str) -> dict[str, Any] | None:
+    """A reply arrives as the token the packet produced, or as the downloaded file, or pasted
+    inside an email with the client's own words wrapped around it. Find it either way."""
+    text = raw.strip()
+    marker = text.find("FDW1:")
+    if marker >= 0:
+        # Mail clients wrap lines and the client types around the block, so the end of the
+        # payload is not marked by anything reliable. Trim back until it decodes.
+        blob = re.sub(r"[^A-Za-z0-9+/=].*$", "", re.sub(r"\s+", "", text[marker + 5:]), flags=re.S)
+        for size in range(len(blob), 3, -1):
+            chunk = blob[:size]
+            try:
+                decoded = base64.b64decode(chunk + "=" * (-len(chunk) % 4), validate=False)
+                parsed = json.loads(decoded.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+    start = text.find("{")
+    if start >= 0:
+        try:
+            return json.loads(text[start:text.rfind("}") + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def newest_map(out_dir: Path, feature_id: str, packet: str | None) -> Path | None:
+    maps = sorted(out_dir.glob("*.map.json"))
+    if packet:
+        stem = packet[:-5] if packet.endswith(".html") else packet
+        maps = [m for m in maps if m.name == f"{stem}.map.json"]
+    maps = [m for m in maps if (read_json(m, {}) or {}).get("feature") == feature_id]
+    return maps[-1] if maps else None
+
+
+def cmd_sync(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    fdir, entry = locate(root, args.id)
+    out_dir = root / "phases" / entry["phase"] / "client-packets"
+    map_file = newest_map(out_dir, entry["id"], args.packet)
+    if map_file is None:
+        die([f"No packet map for {entry['id']} in {out_dir}. Render the packet before syncing replies."])
+    mapping = read_json(map_file, {}) or {}
+    tokens = mapping.get("tokens") or {}
+    if not tokens:
+        die([f"{map_file.name} carries no token map — it was written by an older render. "
+             f"Re-render the packet so replies can be matched to the questions that were asked."])
+
+    replies: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for source in args.response or []:
+        raw = sys.stdin.read() if source == "-" else Path(source).expanduser().read_text(encoding="utf-8")
+        parsed = parse_response(raw)
+        if parsed is None:
+            problems.append(f"{source}: no reply found. Expected the block the packet produced "
+                            f"(it starts with FDW1:) or the downloaded file.")
+            continue
+        if parsed.get("packet") and parsed["packet"] != mapping.get("packet"):
+            problems.append(f"{source}: this reply is to '{parsed['packet']}', not "
+                            f"'{mapping.get('packet')}'. Sync it against the packet it answers.")
+            continue
+        parsed["_source"] = source
+        replies.append(parsed)
+    if not replies:
+        die(problems or ["No replies to read."], feature=entry["id"])
+
+    # Group every answer by the question it answers, keeping who said it.
+    by_token: dict[str, list[dict[str, Any]]] = {}
+    for reply in replies:
+        who = (reply.get("from") or "").strip() or "unnamed"
+        for token, value in (reply.get("answers") or {}).items():
+            if token not in tokens:
+                problems.append(f"{who}: answered '{token}', which this packet never asked. Ignored.")
+                continue
+            by_token.setdefault(token, []).append({"from": who, "at": reply.get("at", ""), **value})
+
+    cli, quoted_root = state_cli(), str(root)
+    answered: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    corrections: list[dict[str, Any]] = []
+    commands: list[str] = []
+
+    for token, meta in tokens.items():
+        given = by_token.get(token, [])
+        if meta.get("kind") == "assumption":
+            verdicts = {g.get("verdict") for g in given if g.get("verdict")}
+            if verdicts == {"disagree"} or (len(given) and "disagree" in verdicts):
+                corrections.append({
+                    "we_assumed": meta.get("we_assumed"),
+                    "said_by": [g["from"] for g in given if g.get("verdict") == "disagree"],
+                    "instead": [g.get("text", "") for g in given if g.get("verdict") == "disagree"],
+                })
+            if len(verdicts) > 1:
+                conflicts.append({"about": meta.get("we_assumed"),
+                                  "answers": [{"from": g["from"], "said": g.get("verdict")} for g in given]})
+            continue
+
+        if not given:
+            continue
+        distinct = {g.get("text", "").strip() for g in given if g.get("text", "").strip()}
+        if not distinct:
+            continue
+        if len(given) > 1 and len(distinct) > 1:
+            # Two people said different things. Picking one would invent a client decision.
+            conflicts.append({"about": meta.get("asked"),
+                              "answers": [{"from": g["from"], "said": g.get("text", "")} for g in given]})
+            continue
+        speaker = given[0]
+        answer = next(iter(distinct))
+        answered.append({"ref": meta.get("ref"), "asked": meta.get("asked"),
+                         "answer": answer, "from": speaker["from"]})
+        if meta.get("ref"):
+            commands.append(
+                f'{cli} question-close --root {quoted_root} --question-id {meta["ref"]} '
+                f'--answer "{answer}" --source "{mapping.get("packet")}" --quote "{answer}"')
+
+    asked = [t for t, meta in tokens.items() if meta.get("kind") == "question"]
+    closed = {a["ref"] for a in answered}
+    unanswered = [tokens[t].get("asked") for t in asked
+                  if tokens[t].get("ref") not in closed and tokens[t].get("ref")]
+
+    approvals = [{"from": (r.get("from") or "unnamed"), "verdict": r.get("approve", ""),
+                  "at": r.get("at", "")} for r in replies if r.get("approve")]
+    said_yes = [a["from"] for a in approvals if a["verdict"] == "yes"]
+    said_not_yet = [a["from"] for a in approvals if a["verdict"] == "not-yet"]
+
+    blockers: list[str] = []
+    if unanswered:
+        blockers.append(f"{len(unanswered)} of the questions this packet asked are still unanswered.")
+    if conflicts:
+        blockers.append(f"{len(conflicts)} answers disagree with each other and need one decision.")
+    if said_not_yet:
+        blockers.append(f"{', '.join(said_not_yet)} said the screens are not right yet.")
+    if not said_yes:
+        blockers.append("Nobody approved. Silence is not sign-off.")
+    if not blockers:
+        commands.append(
+            f'{cli} feature-set --root {quoted_root} --id {entry["id"]} --status design-approved '
+            f'--by fdw-client-packet --note "approved by {", ".join(said_yes)} via {mapping.get("packet")}"')
+
+    # File the raw replies beside the packet. The quote in every question-close has to be
+    # traceable to something on disk, or the provenance rule is decoration.
+    record = out_dir / f"{map_file.name[:-len('.map.json')]}.responses.json"
+    existing = read_json(record, {"packet": mapping.get("packet"), "replies": []}) or {}
+    seen = {(r.get("from"), r.get("at")) for r in existing.get("replies", [])}
+    for reply in replies:
+        if (reply.get("from"), reply.get("at")) not in seen:
+            existing.setdefault("replies", []).append(reply)
+    record.write_text(json.dumps(existing, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    emit({
+        "feature": entry["id"],
+        "packet": mapping.get("packet"),
+        "responders": [r.get("from") or "unnamed" for r in replies],
+        "answered": answered,
+        "conflicts": conflicts,
+        "corrections": corrections,
+        "unanswered": unanswered,
+        "approvals": approvals,
+        "recorded": str(record.relative_to(root)),
+        "problems": problems,
+        "blocked_by": blockers,
+        "run": commands,
+        "then": ("Send the disagreed assumptions back to fdw-design as corrections."
+                 if corrections else None),
+    })
 
 
 # ---------------------------------------------------------------- cli
@@ -358,11 +708,24 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--root", required=True)
     p.add_argument("--id", required=True)
     p.add_argument("--content", required=True, help="packet content JSON; see assets/packet.example.json")
-    p.add_argument("--screenshot", action="append", help="Screen name=path.png, embedded as a data URI")
+    p.add_argument("--shots", default=None,
+                   help="capture manifest from fdw_capture.py shots; the deterministic path")
+    p.add_argument("--screenshot", action="append",
+                   help="Screen name=path.png, for an image the capture harness cannot produce")
+    p.add_argument("--no-reply", action="store_true",
+                   help="render without the reply block (a read-only copy, e.g. for an archive)")
     p.add_argument("--client", default=None, help="client name for the header")
     p.add_argument("--date", default=None)
     p.add_argument("--allow-jargon", action="store_true", help="internal preview only; never for a client send")
     p.set_defaults(func=cmd_render)
+
+    p = sub.add_parser("sync", help="read the client's replies back in and say what to run")
+    p.add_argument("--root", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--response", action="append", required=True,
+                   help="a reply: a file, or - for stdin. Repeat for each person who answered.")
+    p.add_argument("--packet", default=None, help="which packet; defaults to the most recent")
+    p.set_defaults(func=cmd_sync)
 
     args = parser.parse_args(argv)
     args.func(args)

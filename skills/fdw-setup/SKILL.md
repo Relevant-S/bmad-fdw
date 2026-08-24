@@ -177,6 +177,10 @@ Report what is missing; do not block on any of it.
   `fdw-handoff` still produces the bundle and tells the BA what to run.
 - **Node and a package manager** — needed to *run* prototypes. Without them `fdw-design` still
   generates one; it just cannot be served.
+- **A Chromium-family browser** — Chrome, Chromium, Edge or Brave, which `fdw-client-packet` drives
+  to capture the prototype screens. Check for one and report the path; if none is found, say that
+  `CHROME_PATH` points at it, and that without it packets describe the screens instead of showing
+  them. This is the one dependency the client actually sees the absence of.
 - **The Figma MCP** — only when `figma_enabled` is true. If it does not respond, say so once; the
   code prototype is the critical path and Figma is optional by design.
 
