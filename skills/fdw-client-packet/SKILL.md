@@ -83,7 +83,21 @@ Read what it gives back before running anything:
 - **Corrections** — an assumption they disagreed with. That is not a closed question, it is a requirement nobody had written down: send it to `fdw-design` so the prototype and the notes stay true.
 - **Blocked by** — why sign-off is not being offered yet.
 
+- **Unanswered assumptions** — they asked for a verdict and got none. Silence is not agreement, so sign-off is withheld and each one is named. A comment with no verdict is `unclear`, which is not confirmation either.
+
 **Anything that did not come back through the packet** — a reply email in prose, a call transcript, an annotated file — route through `fdw-intake`, which anchors every statement to its source and can auto-close the questions this packet asked. Do not hand-transcribe it here; that throws away the provenance. A single sentence in conversation can go straight to `{state-cli} question-close` with the source and quote.
+
+## A second round, when the spec turns up new questions
+
+Writing the spec surfaces questions only the client can answer — and by then the one client-facing step is behind you. Rather than re-opening an approved design, send a short second packet:
+
+```
+{packet-cli} gather --root {discovery_folder} --id <F-NNN> --follow-up
+```
+
+`--follow-up` accepts a feature at `speccing` or `spec-approved`. Write a much shorter packet: the questions and nothing else, with one line reminding them what they already signed off. Render and sync exactly as before — a second packet on the same day gets its own filename rather than overwriting the one they already have.
+
+`sync` will not offer sign-off on a follow-up round; the feature is already past that gate and moving it back would quietly un-approve the spec. It records the answers and points you at `fdw-elaborate check`.
 
 ## Sign-off
 
@@ -96,6 +110,7 @@ Approval is an event with a date and a source, not a feeling. `sync` emits the `
 - **Only client-owned questions go in the packet.** Internal and dev questions are not theirs to answer and make the document look unfinished.
 - **Send the `.html`, never the `.map.json`.** The map exists to route answers back and contains the ids the packet exists to hide.
 - **Never resolve a conflict on the client's behalf.** Two stakeholders disagreeing is information, not noise.
+- **Silence is never agreement.** An assumption they skipped is a guess still standing, and it will turn into rework at the same price as one they never saw.
 - **This skill writes no feature state directly.** Sign-off and answers go through `{state-cli}`, so the registry and the feature folder can never disagree.
 
 ## Headless

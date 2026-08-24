@@ -75,7 +75,7 @@ standardized, independently runnable, and headless-capable so nothing has to be 
 **PRD boundary:** the module prepares a phase bundle (approved specs, designs, decisions, resolved
 questions) and invokes `bmad-prd` Create with those paths as source documents. bmad-core owns PRD
 authoring; this module owns the quality of its inputs. A pre-flight blocker report runs before handoff and
-warns (does not refuse) — this makes Vadim's own success metric visible at exactly the moment he measures it.
+reports without refusing, while `bundle` refuses — this makes Vadim's own success metric visible at exactly the moment he measures it, and stops a blocker travelling on the strength of a number nobody checked.
 
 **Design output:** code prototype is the primary path (HTML/React reusing the project's component library,
 as proven in the transcript). Figma MCP is wired as optional import/export, not the critical path.
@@ -88,7 +88,7 @@ as proven in the transcript). Figma MCP is wired as optional import/export, not 
 | Shape | BA agent front door + discrete workflow skills | Keeps Vadim's low-ceremony conversational feel; makes each stage standardized, independently runnable, and headless-capable. |
 | Design output | Code prototype primary, Figma MCP optional | Proven in the transcript; component reuse is what made output quality jump. Figma stays available but off the critical path. |
 | PRD boundary | Prepare bundle → invoke `bmad-prd` Create | bmad-core owns PRD authoring and its reviewer gate; this module owns input quality. Satisfies requirement 4 with no forking. |
-| Blocker gate | Pre-flight report at handoff, **warns, does not refuse** | Surfaces Vadim's own success metric at the moment he measures it, without blocking a BA who knowingly accepts risk. |
+| Blocker gate | Pre-flight **reports**; `bundle` **refuses** while a critical question is open, with a named override | *Reversed 2026-08-24 — see the amendment below.* The original warns-only design was never exercised, because the count it warned on was structurally always zero. |
 | Change absorption | Reopen spec + change record + downstream-impact flag | The spec exists *because* it is cheap to change. Preserve that, but never silently — the audit trail is what protects an outsourcing engagement. |
 | As-built baseline | Maintained, refreshed at each phase handoff | Answers the EasyPay "keep patching one PRD" failure and Ostap's mid-term-memory gap. Phase N+1 reads it instead of loading N old specs. |
 | Language | Any input language in, English artifacts out | Matches `document_output_language: English`. Intake owns Ukrainian/mixed/noisy-ASR normalization. `client_facing_language` exists as config for future clients. |
@@ -1129,6 +1129,75 @@ Found alongside it: `gather` hardcoded the prototype at `design/prototype` while
 `fdw_capture` both resolve `prototype_dir` from `grounding.json`. Any feature whose design put the
 prototype elsewhere was reported as having no prototype at all, and the packet refused to build.
 All three now resolve it the same way.
+
+### The blocker ledger closed (2026-08-24)
+
+A phase PRD was generated for the live engagement carrying **eleven open questions**, against a
+standard of none. Diagnosis, then the fix.
+
+**The defect.** `fdw-elaborate` wrote open questions as prose into `spec.md` under `## Open questions`
+and `## Missing information`. Nothing minted them into `feature.json["questions"]`, the ledger every
+gate reads — and nothing could, because **no CLI verb existed that could add a question**. They were
+born only inside `apply-plan`. On F-001 the spec listed four open questions and four
+missing-information items; the ledger held two questions, both resolved. Approval passed. Pre-flight,
+replayed with the feature restored to `spec-approved`, reported `0 critical blocker(s) would travel
+into the PRD`. `BUNDLE.md` told the BA *"No critical questions are open."* `phase-close` recorded
+`blocker_count_at_handoff: 0` — the module's own evaluation metric, a false zero. Eight of the eleven
+questions had existed upstream all along and were invisible to everything.
+
+Two SKILL.md files already promised the behaviour: `fdw-design` said "fdw-elaborate turns every
+unresolved one into an open question", and `fdw-elaborate` said "every open question gets a
+criticality and an owner". Neither was implementable.
+
+**What was built.**
+
+- **`question-add`** in the state CLI, the verb that was missing. Takes a batch file as its primary
+  path — the bridge files four to eight at a time and the engagement writes them in Ukrainian, so
+  eight shell commands carrying em dashes and apostrophes is a quoting hazard, not a design. Batch is
+  all-or-nothing; the registry's denormalised `open_questions` mirror is updated in the same write,
+  or `validate` would report every store stale.
+- **Id minting moved from `len(questions) + 1` to `max(id in use) + 1`** at all four existing sites.
+  Once a caller may supply an id the list can carry gaps, and length-plus-one walks into an id
+  already taken — ids `Q-01, Q-10` mint `Q-03…` and collide at `Q-10`.
+- **`fdw-elaborate questions`**, the bridge. Parses both question sections, stamps an id into each
+  unfiled bullet exactly as requirements get theirs, and emits the one command that files them.
+  Wrapped bullets are joined — real specs wrap, and a ledger entry cut off mid-sentence is useless.
+  A bullet that does not parse is a named problem, never a silent skip: silent skipping is the bug
+  class being fixed.
+- **The reverse check, un-bypassable.** An id in the prose that the ledger has never heard of is an
+  *unknown* blocker being hidden, not a known one being accepted, so `--accept-open-blockers` does
+  not reach it. This is what turns a minted id from a cache into a real join, and it is the fix
+  rather than an add-on.
+- **`approve` refuses on any open question**, not only critical. Decisive evidence: all eight
+  questions in the real spec were marked non-critical, so a critical-only gate would have let that
+  PRD through unchanged.
+- **`bundle` refuses** while a critical question is open, naming the clean features first and
+  `--accept-open-blockers --reason` second, with the accepted ids written into `bundle.json` and
+  `BUNDLE.md`. The gate is on `bundle`, not `preflight`: preflight is the report the BA runs to
+  decide, and `die()` returns before its `--out` HTML is written. It also catches the one case
+  nothing else can — a critical question raised *after* approval never passes the spec gate again.
+- **`blocker_count_at_handoff` was not redefined.** Earlier phases recorded their score under the
+  critical-only definition and redefining it would destroy the only cross-phase trend the module has.
+  `open_question_count_at_handoff` sits beside it.
+- **A follow-up client round.** Spec-stage client questions arrive after the only client-facing step,
+  so `gather --follow-up` accepts `speccing` and `spec-approved`. `sync` gates its sign-off command
+  on the lifecycle index rather than the flag — emitting it at `spec-approved` would be a *backward*
+  move, which `feature-set` allows unconditionally, silently un-approving the spec and dropping the
+  feature out of bundle eligibility with no override line anywhere.
+- **Silence stopped meaning agreement.** The same trace showed the packet asked about assumption A16,
+  the client answered everything else and approved, and sign-off went through. Unanswered assumptions
+  now block and are named; a comment with no verdict is `unclear`, not confirmation.
+
+**Verified by replaying the real store.** F-001 restored to `speccing`: the bridge minted four ids
+from `## Open questions` and flagged the four `## Missing information` items as unparseable, naming
+the shape — they were written as bolded prose headings, which is the migration cost of this change
+and the honest outcome. Rewritten in the shape, all eight filed, registry mirror clean, `validate`
+healthy, `approve` refused on eight, re-run idempotent. Overriding at spec level then bundling
+succeeded; a critical question added afterwards flipped the bundle to refused.
+
+**Out of scope, and still real:** three of the eleven were genuine PRD-time discoveries. One of them —
+"reporting", which appears in `signal.md` and nowhere else in the store — points at a missing
+signal-to-spec coverage check that no gate performs. Separate work.
 
 **Next steps:**
 

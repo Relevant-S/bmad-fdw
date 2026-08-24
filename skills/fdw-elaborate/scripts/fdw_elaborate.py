@@ -36,6 +36,16 @@ STUB = "_Not written yet._"
 
 REQ_LINE = re.compile(r"^\s*-\s+(?:\*\*\[(?P<id>[A-Z0-9-]+-R-\d+)\]\*\*\s+)?(?P<body>.+?)\s*$")
 PROV = re.compile(r"\[(?:src|from):\s*[^\]]+\]")
+# Id first, exactly as requirements carry theirs — an id at the end of a line is the one that gets
+# lost when the BA edits the end of the line. The dash is permissive and only the two structural
+# tokens are English; the question itself is written in whatever language the engagement runs in.
+Q_LINE = re.compile(
+    r"^\s*-\s+(?:\*\*\[(?P<id>[A-Z0-9-]+-Q-\d+)\]\*\*\s+)?"
+    r"\*\*(?P<criticality>critical|non-critical)\*\*\s*"
+    r"\((?P<owner>client|internal|dev)\)\s*[—–-]{1,2}\s*(?P<text>.+?)\s*$",
+    re.I,
+)
+QUESTION_SECTIONS = {"Open questions": "open questions", "Missing information": "missing information"}
 HEADER_SIZE = re.compile(r"^\*\*Size:\*\*\s*(.+?)\s*$", re.M)
 # Status sits inline in the header row alongside Feature and Phase, not on its own line.
 HEADER_STATUS = re.compile(r"(\*\*Status:\*\*\s*)([^\n·]+)")
@@ -104,6 +114,104 @@ def requirement_lines(text: str) -> list[tuple[int, str, str | None]]:
         if match:
             out.append((i, match.group("body"), match.group("id")))
     return out
+
+
+def question_lines(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Every question bullet under either question section, plus the lines that did not parse.
+
+    Unparseable bullets are returned, never skipped: a question quietly dropped on the floor is
+    exactly the failure this whole path exists to stop."""
+    found: list[dict[str, Any]] = []
+    bad: list[str] = []
+    section: str | None = None
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        heading = re.match(r"^##\s+(.+?)\s*$", line)
+        if heading:
+            section = heading.group(1) if heading.group(1) in QUESTION_SECTIONS else None
+            i += 1
+            continue
+        if not section or not line.strip().startswith("- "):
+            i += 1
+            continue
+        match = Q_LINE.match(line)
+        if not match:
+            bad.append(f"line {i + 1}: {line.strip()[:90]}")
+            i += 1
+            continue
+        # A question long enough to matter wraps. Everything up to the next bullet, blank line or
+        # heading is still the same question, and a ledger entry cut off mid-sentence is useless.
+        body = [match.group("text").strip()]
+        j = i + 1
+        while j < len(lines):
+            nxt = lines[j]
+            if not nxt.strip() or nxt.strip().startswith("- ") or nxt.startswith("#") \
+                    or nxt.strip().startswith("<!--"):
+                break
+            body.append(nxt.strip())
+            j += 1
+        found.append({
+            "line": i,
+            "last_line": j - 1,
+            "id": match.group("id"),
+            "text": " ".join(body),
+            "criticality": match.group("criticality").lower(),
+            "owner": match.group("owner").lower(),
+            "section": section,
+            "origin": QUESTION_SECTIONS[section],
+        })
+        i = j
+    return found, bad
+
+
+def reconcile(root: Path, entry: dict[str, Any], record: dict[str, Any],
+              text: str) -> dict[str, Any]:
+    """Cross-reference the spec's question prose against the ledger every gate actually reads."""
+    bullets, unparsed = question_lines(text)
+    ledger = {q.get("id"): q for q in record.get("questions", [])}
+    open_ids = {q["id"] for q in record.get("questions", []) if q.get("status", "open") == "open"}
+    in_prose = {b["id"] for b in bullets if b["id"]}
+
+    return {
+        "bullets": bullets,
+        "unparsed": unparsed,
+        "to_mint": [b for b in bullets if not b["id"]],
+        "orphan_in_prose": sorted(i for i in in_prose if i not in ledger),
+        "missing_from_prose": sorted(open_ids - in_prose),
+        "resolved_still_in_prose": sorted(
+            i for i in in_prose if i in ledger and ledger[i].get("status") == "resolved"),
+        "triage_drift": [
+            {"id": b["id"], "spec": f"{b['criticality']}/{b['owner']}",
+             "ledger": f"{ledger[b['id']].get('criticality')}/{ledger[b['id']].get('owner')}"}
+            for b in bullets if b["id"] in ledger
+            and (b["criticality"] != ledger[b["id"]].get("criticality")
+                 or b["owner"] != ledger[b["id"]].get("owner"))
+        ],
+    }
+
+
+def reconcile_problems(fid: str, state: dict[str, Any], root: Path) -> list[str]:
+    """The two that must block, and they are not bypassable. An id in the prose that the ledger
+    has never heard of is an unknown blocker being hidden, not a known one being accepted."""
+    problems: list[str] = []
+    for line in state["unparsed"]:
+        problems.append(
+            f"{fid}: a bullet under a question section does not parse — {line}. Shape is "
+            f"`- **critical** (client) — the question`. A bullet nobody can read is a question "
+            f"nobody counts.")
+    if state["to_mint"]:
+        problems.append(
+            f"{fid}: {len(state['to_mint'])} question(s) are written in the spec but not in the "
+            f"ledger. Prose is not counted by anything — approval, the pre-flight report and the "
+            f"phase's own blocker count all read the ledger. Run: "
+            f"uv run {Path(__file__).resolve()} questions --root {root} --id {fid}")
+    if state["orphan_in_prose"]:
+        problems.append(
+            f"{fid}: the spec claims {', '.join(state['orphan_in_prose'])}, which the ledger has "
+            f"never heard of. Re-run `questions` — it emits the command that files them.")
+    return problems
 
 
 # ---------------------------------------------------------------- gather
@@ -255,7 +363,9 @@ TEMPLATE = """# {title} — Spec
 ## Open questions
 
 <!-- Shape:  - **critical** (client) — Can two sessions occupy the same room?
-     Owner is client, internal or dev. Approval refuses while any critical question is open. -->
+     Owner is client, internal or dev. **critical** and (owner) stay in English even when the
+     question does not — they are what the parser reads. Approval refuses while ANY question here
+     is still open, and `questions` files each one in the ledger every gate downstream counts. -->
 
 {stub}
 
@@ -268,7 +378,10 @@ TEMPLATE = """# {title} — Spec
 
 ## Missing information
 
-<!-- What you need and do not have. Distinct from an open question: nobody has been asked yet. -->
+<!-- What you need and do not have. Distinct from an open question only in that nobody has been
+     asked yet — it still gates approval, because a gap you cannot fill is a gap development hits.
+     Same shape, and default these to non-critical unless the build genuinely stops without them:
+       - **non-critical** (client) — the real seven-row rules table for the new categories -->
 
 {stub}
 """
@@ -319,6 +432,9 @@ def inspect(root: Path, feature_id: str) -> dict[str, Any]:
                 f"'none' is an answer worth writing down."
             )
 
+    questions_state = reconcile(root, entry, record, text)
+    problems.extend(reconcile_problems(entry["id"], questions_state, root))
+
     requirements = requirement_lines(text)
     if not requirements:
         problems.append(f"{entry['id']}: no requirements. A spec with nothing to build is not a spec.")
@@ -336,6 +452,7 @@ def inspect(root: Path, feature_id: str) -> dict[str, Any]:
 
     open_q = [q for q in record.get("questions", []) if q.get("status", "open") == "open"]
     critical = [q for q in open_q if q.get("criticality") == "critical"]
+    questions_state["open_ledger"] = open_q
 
     changes = (fdir / "changes.md").read_text(encoding="utf-8") if (fdir / "changes.md").exists() else ""
     open_changes = [b.strip().splitlines()[0] for b in changes.split("\n## ")[1:] if "resolution: OPEN" in b]
@@ -344,7 +461,106 @@ def inspect(root: Path, feature_id: str) -> dict[str, Any]:
         "feature": entry["id"], "entry": entry, "fdir": fdir, "spec": spec, "text": text,
         "requirements": requirements, "size": size, "problems": problems,
         "open_questions": open_q, "critical_open": critical, "open_changes": open_changes,
+        "questions_state": questions_state,
     }
+
+
+def cmd_questions(args: argparse.Namespace) -> None:
+    """File the spec's questions into the ledger, and report where the two have drifted.
+
+    The spec is this skill's sandbox so the ids are stamped into it here; the ledger belongs to the
+    state CLI, so what comes back is the command that writes there. Between the two there is a
+    window where the prose carries an id the ledger lacks — which is exactly `orphan_in_prose`, and
+    re-running closes it, because question-add on a supplied id is a no-op."""
+    root = Path(args.root).resolve()
+    fdir, entry, record = locate(root, args.id)
+    spec = fdir / "spec.md"
+    if not spec.exists():
+        die([f"{entry['id']}: no spec.md yet. Run scaffold first."])
+    text = spec.read_text(encoding="utf-8")
+    state = reconcile(root, entry, record, text)
+
+    used = [int(m.group(1)) for q in record.get("questions", [])
+            if (m := re.match(rf"^{re.escape(entry['id'])}-Q-(\d+)$", str(q.get("id", ""))))]
+    used += [int(b["id"].rsplit("-", 1)[1]) for b in state["bullets"] if b["id"]]
+    next_n = max(used, default=0) + 1
+
+    lines = text.splitlines()
+    minted: list[dict[str, Any]] = []
+    for bullet in state["to_mint"]:
+        qid = f"{entry['id']}-Q-{next_n:02d}"
+        next_n += 1
+        raw = lines[bullet["line"]]
+        indent = raw[: len(raw) - len(raw.lstrip())]
+        lines[bullet["line"]] = (
+            f"{indent}- **[{qid}]** **{bullet['criticality']}** ({bullet['owner']}) — {bullet['text']}")
+        for extra in range(bullet["line"] + 1, bullet.get("last_line", bullet["line"]) + 1):
+            lines[extra] = None  # the wrapped remainder now lives on the stamped line
+        minted.append({"id": qid, "text": bullet["text"], "criticality": bullet["criticality"],
+                       "owner": bullet["owner"], "origin": bullet["origin"]})
+
+    if args.reconcile and state["missing_from_prose"]:
+        by_id = {q["id"]: q for q in record.get("questions", [])}
+        restored = [
+            f"- **[{qid}]** **{by_id[qid].get('criticality', 'critical')}** "
+            f"({by_id[qid].get('owner', 'client')}) — {by_id[qid].get('text', '')}"
+            for qid in state["missing_from_prose"]
+        ]
+        out: list[str] = []
+        for line in lines:
+            out.append(line)
+            if re.match(r"^##\s+Open questions\s*$", line):
+                out.append("")
+                out.extend(restored)
+        lines = out
+
+    if minted or (args.reconcile and state["missing_from_prose"]):
+        spec.write_text("\n".join(l for l in lines if l is not None) + "\n", encoding="utf-8")
+
+    # Everything the ledger still lacks, including ids stamped by an earlier run whose command was
+    # never executed — so a half-finished sync heals itself rather than sitting there.
+    ledger_ids = {q.get("id") for q in record.get("questions", [])}
+    pending = list(minted) + [
+        {"id": b["id"], "text": b["text"], "criticality": b["criticality"], "owner": b["owner"],
+         "origin": b["origin"]}
+        for b in state["bullets"] if b["id"] and b["id"] not in ledger_ids
+    ]
+    seen: set[str] = set()
+    pending = [q for q in pending if not (q["id"] in seen or seen.add(q["id"]))]
+
+    batch_file = fdir / ".questions-add.json"
+    commands: list[str] = []
+    if pending:
+        for origin in ("open questions", "missing information"):
+            group = [q for q in pending if q["origin"] == origin]
+            if not group:
+                continue
+            target = fdir / f".questions-add-{origin.split()[0]}.json"
+            target.write_text(json.dumps(
+                {"feature": entry["id"], "source": f"spec {entry['id']} · {origin}",
+                 "questions": [{k: q[k] for k in ("id", "text", "criticality", "owner")}
+                               for q in group]},
+                indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            commands.append(f"{state_cli()} question-add --root {root} --from {target}")
+    elif batch_file.exists():
+        batch_file.unlink()
+
+    emit({
+        "feature": entry["id"],
+        "minted": [q["id"] for q in minted],
+        "pending": [q["id"] for q in pending],
+        "in_sync": len(state["bullets"]) - len(pending),
+        "orphan_in_prose": state["orphan_in_prose"],
+        "missing_from_prose": state["missing_from_prose"],
+        "resolved_still_in_prose": state["resolved_still_in_prose"],
+        "triage_drift": state["triage_drift"],
+        "unparsed": state["unparsed"],
+        "restored": state["missing_from_prose"] if args.reconcile else [],
+        "run": commands,
+        "note": ("The spec now carries these ids. They are not in the ledger until you run the "
+                 "command above, and check and approve will refuse until you do."
+                 if commands else "Spec and ledger agree."),
+    })
 
 
 def cmd_check(args: argparse.Namespace) -> None:
@@ -358,6 +574,9 @@ def cmd_check(args: argparse.Namespace) -> None:
         "critical_open": [q["id"] for q in state["critical_open"]],
         "open_questions": len(state["open_questions"]),
         "open_changes": state["open_changes"],
+        "unminted": len(state["questions_state"]["to_mint"]),
+        "orphan_in_prose": state["questions_state"]["orphan_in_prose"],
+        "missing_from_prose": state["questions_state"]["missing_from_prose"],
         "problems": state["problems"],
         "structurally_ready": not state["problems"],
     }
@@ -381,13 +600,18 @@ def cmd_approve(args: argparse.Namespace) -> None:
             f"Absorb the change into the spec and close the record before approving."
         )
 
-    if state["critical_open"] and not args.accept_open_blockers:
-        listed = ", ".join(f"{q['id']} ({q.get('owner', '?')})" for q in state["critical_open"])
+    if state["open_questions"] and not args.accept_open_blockers:
+        listed = "; ".join(
+            f"{q['id']} ({q.get('criticality', '?')} · {q.get('owner', '?')}) {q.get('text', '')[:60]}"
+            for q in state["open_questions"]
+        )
         problems.append(
-            f"{entry['id']}: {len(state['critical_open'])} critical question(s) still open — {listed}. "
-            f"A blocker that survives approval survives into the PRD, which is the number this module "
-            f"exists to drive to zero. Close them, or pass --accept-open-blockers to approve anyway "
-            f"and have it recorded."
+            f"{entry['id']}: {len(state['open_questions'])} question(s) still open "
+            f"({len(state['critical_open'])} critical) — {listed}. A question this spec still asks is "
+            f"a question the phase PRD will ask. Close them — fdw-intake for an answer that arrived "
+            f"in a document, question-close for one that arrived in conversation — or pass "
+            f"--accept-open-blockers to approve anyway and have it recorded. That count is what this "
+            f"module exists to drive to zero."
         )
 
     if problems:
@@ -412,13 +636,15 @@ def cmd_approve(args: argparse.Namespace) -> None:
     updated = "\n".join(lines)
     if HEADER_STATUS.search(updated):
         updated = HEADER_STATUS.sub(lambda m: f"{m.group(1)}approved {stamp}", updated, count=1)
-    if args.accept_open_blockers and state["critical_open"]:
+    if args.accept_open_blockers and state["open_questions"]:
         note = "\n".join(
-            f"- {q['id']} ({q.get('owner', '?')}) — {q.get('text', '')}" for q in state["critical_open"]
+            f"- {q['id']} ({q.get('criticality', '?')} · {q.get('owner', '?')}) — {q.get('text', '')}"
+            for q in sorted(state["open_questions"],
+                            key=lambda q: q.get("criticality") != "critical")
         )
         updated += (
-            f"\n\n## Approved with open blockers\n\nApproved {stamp} while these critical questions "
-            f"were still open. They travel into the phase PRD unresolved:\n\n{note}\n"
+            f"\n\n## Approved with open blockers\n\nApproved {stamp} while these questions were "
+            f"still open. They travel into the phase PRD unresolved:\n\n{note}\n"
         )
     state["spec"].write_text(updated + ("\n" if not updated.endswith("\n") else ""), encoding="utf-8")
 
@@ -430,7 +656,7 @@ def cmd_approve(args: argparse.Namespace) -> None:
             "minted": minted,
             "preserved": sorted(used),
             "size": state["size"],
-            "approved_with_open_blockers": [q["id"] for q in state["critical_open"]] if args.accept_open_blockers else [],
+            "approved_with_open_blockers": [q["id"] for q in state["open_questions"]] if args.accept_open_blockers else [],
             "next": walk_to(
                 root, entry, "spec-approved", "fdw-elaborate",
                 note=f"spec approved with {len(state['requirements'])} requirements",
@@ -480,6 +706,13 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--root", required=True)
     p.add_argument("--id", required=True)
     p.set_defaults(func=cmd_scaffold)
+
+    p = sub.add_parser("questions", help="file the spec's questions into the ledger and report drift")
+    p.add_argument("--root", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--reconcile", action="store_true",
+                   help="also write ledger questions the spec has lost back into it")
+    p.set_defaults(func=cmd_questions)
 
     p = sub.add_parser("check", help="structure and provenance; each problem names its fix")
     p.add_argument("--root", required=True)

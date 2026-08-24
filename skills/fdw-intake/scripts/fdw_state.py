@@ -405,6 +405,33 @@ def cmd_normalize(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------- context pre-pass
 
 
+def next_question_id(fid: str, record: dict[str, Any]) -> str:
+    """The next free question id for a feature. Derived from the highest id actually in use, not
+    from how many questions there are: once a caller may supply its own id, the list can carry
+    gaps, and length-plus-one walks straight into an id that is already taken."""
+    used = [
+        int(match.group(1))
+        for question in record.get("questions", [])
+        if (match := re.match(rf"^{re.escape(fid)}-Q-(\d+)$", str(question.get("id", ""))))
+    ]
+    return f"{fid}-Q-{max(used, default=0) + 1:02d}"
+
+
+def question_record(fid: str, question: dict[str, Any], stamp: str, source: str,
+                    record: dict[str, Any], text: str | None = None) -> dict[str, Any]:
+    """One question, in the shape the contract declares. Every writer goes through here so the
+    seven keys can never drift apart between one creation site and the next."""
+    return {
+        "id": question.get("id") or next_question_id(fid, record),
+        "text": text if text is not None else question["text"],
+        "criticality": question.get("criticality", "critical"),
+        "owner": question.get("owner", "client"),
+        "status": "open",
+        "raised": stamp,
+        "raised_by": source,
+    }
+
+
 def _feature_dir(root: Path, feature: dict[str, Any]) -> Path:
     return store(root)["phases"] / feature["phase"] / "features" / f"{feature['id']}-{feature['slug']}"
 
@@ -702,18 +729,9 @@ def cmd_apply_plan(args: argparse.Namespace) -> None:
 
         fdir = paths["phases"] / phase / "features" / f"{fid}-{slug}"
         (fdir / "design").mkdir(parents=True, exist_ok=True)
-        questions = [
-            {
-                "id": f"{fid}-Q-{i + 1:02d}",
-                "text": q["text"],
-                "criticality": q["criticality"],
-                "owner": q["owner"],
-                "status": "open",
-                "raised": stamp,
-                "raised_by": source_id,
-            }
-            for i, q in enumerate(feature.get("questions", []))
-        ]
+        questions: list[dict[str, Any]] = []
+        for q in feature.get("questions", []):
+            questions.append(question_record(fid, q, stamp, source_id, {"questions": questions}))
         write_json_atomic(
             fdir / "feature.json",
             {
@@ -750,19 +768,9 @@ def cmd_apply_plan(args: argparse.Namespace) -> None:
         fdir = _feature_dir(root, entry)
         record = read_json(fdir / "feature.json", {})
         append_md(fdir / "signal.md", _signal_block(source_id, merge["signal"]))
-        existing = len(record.get("questions", []))
-        for i, question in enumerate(merge.get("questions", [])):
+        for question in merge.get("questions", []):
             record.setdefault("questions", []).append(
-                {
-                    "id": f"{fid}-Q-{existing + i + 1:02d}",
-                    "text": question["text"],
-                    "criticality": question["criticality"],
-                    "owner": question["owner"],
-                    "status": "open",
-                    "raised": stamp,
-                    "raised_by": source_id,
-                }
-            )
+                question_record(fid, question, stamp, source_id, record))
             entry["open_questions"][question["criticality"]] += 1
         for alias in merge.get("aliases_add", []):
             if alias not in record.setdefault("aliases", []):
@@ -797,18 +805,9 @@ def cmd_apply_plan(args: argparse.Namespace) -> None:
                 entry["flags"].append("changed")
             if "changed" not in record.setdefault("flags", []):
                 record["flags"].append("changed")
-        existing = len(record.get("questions", []))
         record.setdefault("questions", []).append(
-            {
-                "id": f"{fid}-Q-{existing + 1:02d}",
-                "text": f"Contradiction: {contradiction['text']}",
-                "criticality": contradiction.get("criticality", "critical"),
-                "owner": contradiction.get("owner", "client"),
-                "status": "open",
-                "raised": stamp,
-                "raised_by": source_id,
-            }
-        )
+            question_record(fid, contradiction, stamp, source_id, record,
+                            text=f"Contradiction: {contradiction['text']}"))
         entry["open_questions"][contradiction.get("criticality", "critical")] += 1
         record["updated"] = stamp
         entry["updated"] = stamp
@@ -1025,6 +1024,127 @@ def cmd_feature_set(args: argparse.Namespace) -> None:
     emit({"id": args.id, "changed": changes, "status": entry["status"], "flags": entry.get("flags", [])})
 
 
+def _normalise(text: str) -> str:
+    return re.sub(r"[\s.;:!?—–-]+", " ", str(text)).strip().casefold()
+
+
+def cmd_question_add(args: argparse.Namespace) -> None:
+    """Raise questions against a feature from outside an ingest run.
+
+    Until this existed, a question could only be born inside apply-plan — so every question a BA
+    found while writing the spec lived in prose that no gate reads, and approval, the pre-flight
+    report and the phase's own blocker count all reported zero while the spec listed eight."""
+    root = Path(args.root).resolve()
+    paths = store(root)
+    registry = read_json(paths["registry"], empty_registry())
+
+    batch = read_json(Path(args.from_file).resolve()) if args.from_file else None
+    if args.from_file and batch is None:
+        die([f"No batch at {args.from_file}, or it is not JSON."])
+    fid = args.id or (batch or {}).get("feature")
+    source = args.source or (batch or {}).get("source")
+    incoming = (batch or {}).get("questions") if batch else [
+        {"id": args.question_id, "text": args.text,
+         "criticality": args.criticality, "owner": args.owner}
+    ]
+    if not fid:
+        die(["No feature id. Pass --id, or put 'feature' in the batch file."])
+    if not source:
+        die([f"{fid}: --source is required — where did this question come from? It is what a "
+             f"later reader uses to tell an evidenced question from a guess."])
+    if not incoming:
+        die([f"{fid}: nothing to add."])
+
+    entry = next((f for f in registry.get("features", []) if f["id"] == fid), None)
+    if entry is None:
+        die([f"No feature '{fid}'. Known: {[f['id'] for f in registry.get('features', [])]}"])
+    fdir = _feature_dir(root, entry)
+    record = read_json(fdir / "feature.json")
+    if record is None:
+        die([f"{fid}: no feature.json at {fdir}. Run validate — the registry and the folders disagree."])
+
+    # Validate every entry before writing any of it: a batch that is half-applied is worse than
+    # one that is refused, because nothing downstream can tell which half landed.
+    errors: list[str] = []
+    known = {q.get("id"): q for q in record.get("questions", [])}
+    open_text = {_normalise(q.get("text", "")): q for q in record.get("questions", [])
+                 if q.get("status", "open") == "open"}
+    done_text = {_normalise(q.get("text", "")): q for q in record.get("questions", [])
+                 if q.get("status") == "resolved"}
+    plan: list[dict[str, Any]] = []
+    already: list[str] = []
+    warnings: list[str] = []
+
+    for i, question in enumerate(incoming):
+        where = f"{fid}.questions[{i}]"
+        text = str(question.get("text", "")).strip()
+        criticality = question.get("criticality")
+        owner = question.get("owner")
+        qid = question.get("id")
+        if not text:
+            errors.append(f"{where}: missing 'text'.")
+        if criticality not in CRITICALITY:
+            errors.append(f"{where}: criticality must be one of {CRITICALITY}.")
+        if owner not in OWNERS:
+            errors.append(f"{where}: owner must be one of {OWNERS} — who has to answer this?")
+        if qid is not None:
+            if not re.fullmatch(rf"{re.escape(fid)}-Q-\d{{2,}}", str(qid)):
+                errors.append(f"{where}: '{qid}' is not an id for {fid}. Shape is {fid}-Q-NN.")
+            elif qid in known:
+                # Re-running the same sync must be a no-op, not a second copy.
+                if _normalise(known[qid].get("text", "")) == _normalise(text):
+                    already.append(qid)
+                    continue
+                errors.append(
+                    f"{where}: {qid} already exists with different wording. Ids never change meaning "
+                    f"— close it and raise a new one.\n    have: {known[qid].get('text', '')}\n"
+                    f"    got:  {text}")
+                continue
+        twin = open_text.get(_normalise(text))
+        if twin and not args.allow_duplicate:
+            errors.append(
+                f"{where}: {twin['id']} is already open with the same wording. Pass "
+                f"--allow-duplicate if these really are two questions.")
+            continue
+        settled = done_text.get(_normalise(text))
+        if settled:
+            warnings.append(
+                f"{settled['id']} was answered on {settled.get('resolved', '?')} with the same "
+                f"wording. Raising it again is fine if something changed — worth a look first.")
+        plan.append({"id": qid, "text": text, "criticality": criticality, "owner": owner})
+
+    if errors:
+        die(errors, feature=fid, hint="Nothing was written.")
+
+    if entry["status"] in SPEC_LOCKED and plan:
+        warnings.append(
+            f"{fid} is '{entry['status']}'. These count as blockers from now on: fdw-handoff will "
+            f"refuse to bundle while a critical one is open.")
+
+    stamp = today()
+    added: list[str] = []
+    for question in plan:
+        minted = question_record(fid, question, stamp, source, record)
+        record.setdefault("questions", []).append(minted)
+        counts = entry.setdefault("open_questions", {"critical": 0, "non-critical": 0})
+        counts[minted["criticality"]] = counts.get(minted["criticality"], 0) + 1
+        added.append(minted["id"])
+
+    if added:
+        record["updated"] = entry["updated"] = stamp
+        write_json_atomic(fdir / "feature.json", record)
+        write_json_atomic(paths["registry"], registry)
+        for question, qid in zip(plan, added):
+            append_md(
+                paths["decisions"],
+                f"- {stamp} · event · {qid} raised ({question['criticality']}, {question['owner']}): "
+                f"{question['text']} · source: {source}",
+            )
+
+    emit({"feature": fid, "added": added, "already_present": already,
+          "open_questions": entry.get("open_questions"), "warnings": warnings})
+
+
 def cmd_question_close(args: argparse.Namespace) -> None:
     """Close one question outside an ingest run. Client sign-off and inline feedback are real
     answers but have no anchored document, so this path takes a named source instead of an
@@ -1077,6 +1197,15 @@ def _phase_file(root: Path, phase: str) -> Path:
 
 def _phase_features(registry: dict[str, Any], phase: str) -> list[dict[str, Any]]:
     return [f for f in registry.get("features", []) if f["phase"] == phase]
+
+
+def _all_open(root: Path, features: list[dict[str, Any]]) -> list[str]:
+    out = []
+    for feature in features:
+        record = read_json(_feature_dir(root, feature) / "feature.json", {})
+        out += [q["id"] for q in record.get("questions", [])
+                if q.get("status", "open") == "open"]
+    return out
 
 
 def _critical_open(root: Path, features: list[dict[str, Any]]) -> list[str]:
@@ -1243,6 +1372,10 @@ def cmd_phase_close(args: argparse.Namespace) -> None:
         "features": [f["id"] for f in members],
         "blocker_count_at_handoff": len(blockers),
         "blockers_at_handoff": blockers,
+        # Critical-only, deliberately: earlier phases recorded their score under that definition
+        # and redefining it would destroy the only cross-phase trend the module has. The wider
+        # count sits beside it so future trends can have both.
+        "open_question_count_at_handoff": len(_all_open(root, members)),
     })
     if args.prd_path:
         record["prd_path"] = args.prd_path
@@ -1430,6 +1563,22 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--by", default=None, help="which skill made the change")
     p.add_argument("--force", action="store_true", help="allow a forward move that skips a gate; logged as an override")
     p.set_defaults(func=cmd_feature_set)
+
+    p = sub.add_parser("question-add", help="raise questions found outside an ingest run")
+    p.add_argument("--root", required=True)
+    p.add_argument("--id", default=None, help="feature id; may also come from the batch file")
+    p.add_argument("--from", dest="from_file", default=None,
+                   help="batch JSON: {feature, source, questions:[{id?,text,criticality,owner}]}")
+    p.add_argument("--text", default=None)
+    p.add_argument("--criticality", default=None, choices=CRITICALITY)
+    p.add_argument("--owner", default=None, choices=OWNERS)
+    p.add_argument("--question-id", dest="question_id", default=None,
+                   help="supply the id to make a re-run a no-op instead of a second copy")
+    p.add_argument("--source", default=None,
+                   help="where it came from, e.g. 'spec F-001 open questions'")
+    p.add_argument("--allow-duplicate", dest="allow_duplicate", action="store_true",
+                   help="add even though an open question has the same wording")
+    p.set_defaults(func=cmd_question_add)
 
     p = sub.add_parser("question-close", help="close one question from client feedback or sign-off")
     p.add_argument("--root", required=True)

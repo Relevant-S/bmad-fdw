@@ -93,10 +93,60 @@ def test_preflight_counts_only_blockers_that_would_actually_travel(store):
     assert out["requirements_total"] == 3
 
 
-def test_preflight_warns_and_never_refuses(store):
+def test_preflight_reports_and_never_refuses_but_says_bundle_will(store):
+    """The report is what the BA runs to decide, so it always exits 0 — and die() would return
+    before the --out HTML is written, silently dropping the artifact they asked for."""
     out = run("preflight", "--root", str(store), "--phase", "phase-1")
-    assert out["ok"] is True and out["warns_only"] is True
-    assert "would travel into the PRD" in out["verdict"]
+    assert out["ok"] is True and out["blocks_bundle"] is True
+    assert "bundle will refuse" in out["verdict"]
+
+
+def test_preflight_sees_questions_the_ledger_never_heard_of(store):
+    """Independent of the ledger: a spec still carrying unfiled question bullets means the count
+    is understating the blockers, whatever the count says."""
+    spec = store / "phases/phase-1/features/F-002-academy/spec.md"
+    spec.write_text(spec.read_text() + "\n## Open questions\n\n- **critical** (client) — Never filed.\n")
+    out = run("preflight", "--root", str(store), "--phase", "phase-1")
+    assert out["unfiled_questions"][0]["feature"] == "F-002"
+    assert "fdw-elaborate questions" in out["unfiled_questions"][0]["detail"]
+
+
+# ---------------------------------------------------------------- the bundle gate
+
+
+def test_bundling_refuses_while_a_critical_blocker_would_travel(store):
+    """The failure this reverses: a PRD was generated carrying eleven open questions."""
+    payload = run("bundle", "--root", str(store), "--phase", "phase-1", expect_ok=False)
+    joined = " ".join(payload["errors"])
+    assert "F-001-Q-01" in joined and "would travel into the PRD" in joined
+    assert payload["clean_features"] == ["F-002"]
+    assert "--id F-002" in joined, "name the better exit first"
+    assert not (store / "phases/phase-1/handoff").exists(), "a refusal writes nothing"
+
+
+def test_the_clean_features_can_be_bundled_without_any_override(store):
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--id", "F-002")
+    assert out["features"] == ["F-002"]
+
+
+def test_the_override_is_available_and_recorded_where_it_survives(store):
+    out = run("bundle", "--root", str(store), "--phase", "phase-1",
+              "--accept-open-blockers", "--reason", "client call is next week")
+    manifest = json.loads((store / out["bundle"]).read_text())
+    assert manifest["accepted_blockers"] == ["F-001-Q-01"]
+    assert manifest["override_reason"] == "client call is next week"
+
+
+def test_a_question_raised_after_approval_still_stops_the_bundle(store):
+    """Only a bundle-time gate catches this: the spec gate never runs again."""
+    fdir = store / "phases/phase-1/features/F-002-academy"
+    record = json.loads((fdir / "feature.json").read_text())
+    record["questions"].append({"id": "F-002-Q-09", "text": "Late contradiction", "status": "open",
+                                "criticality": "critical", "owner": "client"})
+    (fdir / "feature.json").write_text(json.dumps(record))
+    payload = run("bundle", "--root", str(store), "--phase", "phase-1", "--id", "F-002",
+                  expect_ok=False)
+    assert "F-002-Q-09" in " ".join(payload["errors"])
 
 
 def test_preflight_flags_a_dependency_left_out_of_the_bundle(store):
@@ -114,11 +164,11 @@ def test_preflight_carries_the_trend_from_earlier_phases(store):
         {"phase": "phase-0", "blockers": 6}]
 
 
-def test_preflight_report_is_self_contained_and_says_it_does_not_block(tmp_path, store):
+def test_preflight_report_is_self_contained_and_says_the_bundle_refuses(tmp_path, store):
     out_html = tmp_path / "pre.html"
     run("preflight", "--root", str(store), "--phase", "phase-1", "--out", str(out_html))
     page = out_html.read_text()
-    assert "does not block" in page
+    assert "never refuses" in page and "Bundling does refuse" in page
     assert "Timezone?" in page
     assert "prefers-color-scheme" in page
     for absent in ("http://", "https://", "<script"):
@@ -167,7 +217,7 @@ def test_a_status_without_a_spec_file_is_caught(store):
 
 
 def test_bundle_lists_paths_rather_than_flattening_the_specs(store):
-    out = run("bundle", "--root", str(store), "--phase", "phase-1")
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")
     manifest = json.loads((store / out["bundle"]).read_text())
     assert manifest["requirements_total"] == 3
     assert manifest["features"][0]["requirements"] == ["F-001-R-01", "F-001-R-02"]
@@ -178,11 +228,11 @@ def test_bundle_lists_paths_rather_than_flattening_the_specs(store):
 
 
 def test_bundle_orders_by_dependency(store):
-    assert run("bundle", "--root", str(store), "--phase", "phase-1")["features"] == ["F-001", "F-002"]
+    assert run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")["features"] == ["F-001", "F-002"]
 
 
 def test_the_readme_orients_a_reader_with_no_context(store):
-    out = run("bundle", "--root", str(store), "--phase", "phase-1")
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")
     readme = (store / out["readme"]).read_text()
     assert "specs are the source of truth" in readme
     assert "F-001 — Events agenda" in readme and "F-002 — Academy" in readme
@@ -191,7 +241,7 @@ def test_the_readme_orients_a_reader_with_no_context(store):
 
 
 def test_the_readme_flags_blockers_travelling_into_the_prd(store):
-    out = run("bundle", "--root", str(store), "--phase", "phase-1")
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")
     readme = (store / out["readme"]).read_text()
     assert "Open blockers travelling into the PRD" in readme and "F-001-Q-01" in readme
     assert out["critical_blockers"] == ["F-001-Q-01"]
@@ -202,12 +252,12 @@ def test_a_clean_bundle_says_every_blocker_was_closed(store):
     record = json.loads((fdir / "feature.json").read_text())
     record["questions"][0]["status"] = "resolved"
     (fdir / "feature.json").write_text(json.dumps(record))
-    out = run("bundle", "--root", str(store), "--phase", "phase-1")
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")
     assert "closed before the specs were approved" in (store / out["readme"]).read_text()
 
 
 def test_the_next_call_agenda_asks_only_the_client_and_leads_with_blockers(store):
-    out = run("bundle", "--root", str(store), "--phase", "phase-1")
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")
     agenda = (store / out["agenda"]).read_text()
     assert "Timezone?" in agenda and "Which gateway?" in agenda, \
         "the agenda covers the whole phase, not just the bundle — the client still owes us both"
@@ -216,7 +266,7 @@ def test_the_next_call_agenda_asks_only_the_client_and_leads_with_blockers(store
 
 
 def test_partial_handoff_is_supported(store):
-    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--id", "F-001")
+    out = run("bundle", "--root", str(store), "--phase", "phase-1", "--id", "F-001", "--accept-open-blockers")
     assert out["features"] == ["F-001"]
     assert json.loads((store / out["bundle"]).read_text())["requirements_total"] == 2
 
@@ -261,7 +311,7 @@ def test_as_built_drops_the_nothing_shipped_placeholder(store):
 def test_bundling_never_changes_feature_state(store):
     watched = [store / "registry.json"] + list((store / "phases/phase-1/features").rglob("feature.json"))
     before = {p: p.read_bytes() for p in watched}
-    run("bundle", "--root", str(store), "--phase", "phase-1")
+    run("bundle", "--root", str(store), "--phase", "phase-1", "--accept-open-blockers")
     assert {p: p.read_bytes() for p in watched} == before, \
         "advancing features to handed-off goes through the shared CLI"
 

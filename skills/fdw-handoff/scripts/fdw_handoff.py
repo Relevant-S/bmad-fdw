@@ -28,6 +28,8 @@ LIFECYCLE = [
 ]
 ELIGIBLE = "spec-approved"
 REQ = re.compile(r"^\s*-\s+\*\*\[(?P<id>[A-Z0-9-]+-R-\d+)\]\*\*\s+(?P<body>.+?)\s*$", re.M)
+# A question bullet that never got an id: written in the spec, counted by nothing.
+UNFILED_Q = re.compile(r"^\s*-\s+\*\*(?:critical|non-critical)\*\*\s*\((?:client|internal|dev)\)", re.M | re.I)
 
 
 def phase_key(label: str) -> tuple[int, ...]:
@@ -166,6 +168,19 @@ def cmd_preflight(args: argparse.Namespace) -> None:
                               f"handed off.",
                 })
 
+    # Independent of the ledger: if a bundled spec still carries question bullets with no id, the
+    # bridge was never run and the ledger is understating the blockers, whatever the count says.
+    unfiled = []
+    for feature in eligible:
+        if not feature["spec_path"]:
+            continue
+        text = feature["spec_path"].read_text(encoding="utf-8")
+        loose = len(UNFILED_Q.findall(text))
+        if loose:
+            unfiled.append({"feature": feature["id"], "bullets": loose,
+                            "detail": f"{feature['id']}: {loose} question bullet(s) in the spec carry "
+                                      f"no id, so nothing counts them. Run fdw-elaborate questions."})
+
     history = trend(root, data["registry"], args.phase)
     payload = {
         "phase": args.phase,
@@ -182,9 +197,14 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         "trend": history,
         "verdict": (
             "Nothing eligible to bundle." if not eligible else
-            f"{len(eligible)} feature(s) ready, {len(critical)} critical blocker(s) would travel into the PRD."
+            f"{len(eligible)} feature(s) ready, {len(critical)} critical blocker(s) would travel "
+            f"into the PRD — bundle will refuse unless you pass --accept-open-blockers."
+            if critical else f"{len(eligible)} feature(s) ready, no critical blockers."
         ),
-        "warns_only": True,
+        # This command is the report the BA runs to decide, so it always exits 0 — the refusal is
+        # on bundle, which is where blockers would actually travel.
+        "blocks_bundle": bool(critical),
+        "unfiled_questions": unfiled,
     }
 
     if args.out:
@@ -242,8 +262,10 @@ def render_preflight(p: dict[str, Any]) -> str:
         f"<div class='sub'>{len(p['eligible'])} feature(s) · {p['requirements_total']} requirement(s) · "
         f"{date.today().isoformat()}</div>",
         f"<div class='verdict {'warn' if crit else 'clean'}'>{esc(p['verdict'])}</div>",
-        "<div class='note'>This report warns; it does not block. Handing off with open blockers is a "
-        "decision the BA is allowed to make — the count is recorded on the phase either way.</div>",
+        "<div class='note'>This report never refuses — it is what you run to decide. "
+        "<b>Bundling does refuse</b> while a critical question is open: bundle the clean features "
+        "with <code>--id</code>, or pass <code>--accept-open-blockers --reason \"…\"</code> to hand "
+        "off knowingly. Either way the count is recorded on the phase.</div>",
     ]
 
     out.append("<h2>Critical blockers that would travel into the PRD</h2>")
@@ -315,6 +337,29 @@ def cmd_bundle(args: argparse.Namespace) -> None:
     if missing_spec:
         die([f"{fid}: status says spec-approved but there is no spec.md." for fid in missing_spec])
 
+    # The gate lives here rather than in preflight: preflight is a report the BA runs precisely to
+    # see the blockers, and a question raised after approval never passes through the spec gate
+    # again — bundling is the last moment anything can catch it.
+    travelling = [(f, q) for f in eligible for q in f["critical_open"]]
+    if travelling and not args.accept_open_blockers:
+        listed = ", ".join(f"{q['id']} ({f['id']} · {q.get('owner', '?')})" for f, q in travelling)
+        clean = [f["id"] for f in eligible if not f["critical_open"]]
+        die(
+            [
+                f"{args.phase}: {len(travelling)} critical question(s) would travel into the PRD "
+                f"unresolved — {listed}. A blocker that reaches the PRD is what this module exists "
+                f"to prevent, and {args.phase} would record it as its own score.",
+                (f"Bundle only what is clean with --id {' --id '.join(clean)}, or"
+                 if clean else "Close them, or") +
+                " pass --accept-open-blockers --reason \"…\" to hand off knowingly; the accepted "
+                "ids are written into bundle.json and BUNDLE.md.",
+            ],
+            phase=args.phase,
+            critical_blockers=[q["id"] for _, q in travelling],
+            minor_open=sum(len(f["open_questions"]) - len(f["critical_open"]) for f in eligible),
+            clean_features=clean,
+        )
+
     out_dir = root / "phases" / args.phase / "handoff"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = args.date or date.today().isoformat()
@@ -349,6 +394,8 @@ def cmd_bundle(args: argparse.Namespace) -> None:
         "features": manifest_features,
         "requirements_total": sum(len(f["requirements"]) for f in eligible),
         "critical_blockers": [q["id"] for f in eligible for q in f["critical_open"]],
+        "accepted_blockers": ([q["id"] for _, q in travelling] if args.accept_open_blockers else []),
+        "override_reason": (args.reason if args.accept_open_blockers else None),
         "readme": str(readme.relative_to(root)),
         "source_documents": [str(readme.relative_to(root))] + sources,
     }
@@ -391,7 +438,11 @@ def cmd_bundle(args: argparse.Namespace) -> None:
         "",
         "## State of the questions",
         "",
-        (f"{len(blockers)} critical question(s) are still open and travel into the PRD unresolved."
+        (f"**Handed off with {len(blockers)} critical question(s) still open**"
+         + (f" — {args.reason}." if args.reason else ".")
+         + " They travel into the PRD unresolved: "
+         + ", ".join(f"{q['id']} ({q.get('owner', '?')})" for q in blockers)
+         + ". Answering them is the first thing this phase owes."
          if blockers else
          "No critical questions are open. Every blocker was closed before the specs were approved."),
         "",
@@ -492,6 +543,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--phase", required=True)
     p.add_argument("--id", action="append", help="bundle only these; omit for every eligible feature")
     p.add_argument("--date", default=None)
+    p.add_argument("--accept-open-blockers", dest="accept_open_blockers", action="store_true",
+                   help="bundle even though critical questions are open; recorded in the bundle")
+    p.add_argument("--reason", default=None, help="why, when overriding")
     p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser("as-built", help="append what this phase shipped to the rolling baseline")

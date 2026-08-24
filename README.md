@@ -337,7 +337,11 @@ When they press **Finish**, the page gives them a block of text to copy into the
 
 **When two people disagree**, it will not choose for you. It shows you both answers side by side and leaves that question open. Guessing which stakeholder to believe is exactly the mistake that ends up in a spec.
 
-**Sign-off is not offered until it is real** — every question you asked has an answer, nothing is in conflict, and someone actually said yes. If it is holding back, it tells you which of those is missing.
+**Sign-off is not offered until it is real** — every question you asked has an answer, every assumption got a yes or a no, nothing is in conflict, and someone actually said yes. If it is holding back, it tells you which of those is missing.
+
+**An assumption they skipped is not an assumption they agreed to.** If they answered nine of eleven and approved, the two they skipped are still guesses, and it says so rather than treating the silence as a yes.
+
+**A follow-up round.** When the specification turns up a question only the client can answer, you can send a short second packet with just that question. It does not re-open the design they already approved, and it never overwrites the document you already sent them.
 
 ---
 
@@ -355,6 +359,12 @@ When they press **Finish**, the page gives them a block of text to copy into the
 **Example.** Ten requirements for Academy. Two trace back to quotes from the call; eight trace back to design decisions the client signed off. Approving is blocked until two client questions are answered.
 
 **Note.** Until you approve it, the spec is a scratchpad. Change your mind freely — nothing downstream is affected. That is deliberate.
+
+**Every question it finds gets filed.** Writing a spec turns up things nobody has decided. Those go into the spec *and* into the master list the rest of the module counts — a question written only in the document is invisible to everything downstream, which is how a specification once reached development with eight unanswered questions in it.
+
+**It will not let you approve a spec that still asks questions.** All of them, not just the urgent ones. If you genuinely need to proceed anyway, you can say so explicitly and it records what you let through, in the spec and in the log. What it will not do is let a question through that was never written down properly in the first place.
+
+**If only the client can answer**, say *"send this to the client"* again — there is a short follow-up round for exactly this, which does not re-open the design they already signed off.
 
 ---
 
@@ -399,7 +409,11 @@ When they press **Finish**, the page gives them a block of text to copy into the
 **Reads:** every approved spec in the phase.
 **Writes:** the bundle, the PRD, and the next call's agenda.
 
-**Example.** Pre-flight says 4 features, 12 requirements, 0 unanswered critical questions. It bundles them and produces the PRD. It will warn you loudly about unanswered questions, but it will not stop you — that call is yours.
+**Example.** Pre-flight says 4 features, 12 requirements, 0 unanswered critical questions. It bundles them and produces the PRD.
+
+**It stops if a critical question is still open.** The pre-flight report itself never stops you — it is what you run to decide. Bundling does: it will not hand development a specification with an unanswered blocker in it. You have two ways forward and it names both — bundle only the features that are clean, or say explicitly that you are proceeding anyway and why. Either way the decision is written into the bundle where the next person will find it.
+
+This is the last gate anything passes. A question that arrives *after* a spec was approved never goes past the earlier check again, so this is the only place it can be caught.
 
 ---
 
@@ -583,6 +597,16 @@ That is reported, not resolved. You will see both answers with names against the
 ### Figma is not responding
 
 Figma is optional and off by default. The prototype is the main path. Carry on without it.
+
+### It will not let me approve the spec
+
+It refuses while the spec still asks a question — any question, not just the urgent ones. Close what you can, send the client-owned ones back with a follow-up packet, and if you genuinely have to proceed anyway say so explicitly; it records what you let through.
+
+If it says questions are "not in the ledger", the spec has questions written in it that were never filed. Run the one command it prints. That filing step is what makes them count anywhere.
+
+### It refuses to bundle the phase
+
+A critical question is still open on one of the features. Bundle only the clean ones — it names them — or say explicitly that you are handing off anyway and why. That reason is written into the bundle so the next reader knows.
 
 ### My phase history looks incomplete
 

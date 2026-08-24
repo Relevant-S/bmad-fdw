@@ -34,7 +34,9 @@ The bar is one rule and one number. **Only a `spec-approved` feature enters a bu
 
 It reports what would go, what is not eligible and why, which critical blockers would travel into the PRD unresolved, dependencies left outside the bundle, and the blocker count against previous phases.
 
-**This warns; it never refuses.** A BA who ships with a known open question is making a legitimate call, and the number is recorded either way. Your job is to make sure the call is made with open eyes: name the blockers, say who owes the answer, and ask whether to chase them or proceed. If the trend is rising rather than falling, say that out loud — it is the clearest signal the method is not working on this engagement.
+**The report never refuses — it is what you run to decide. Bundling does.** `bundle` stops while a critical question is open, because bundling is the moment blockers actually travel and it is the last gate anything passes: a question raised after a spec was approved never goes through the spec gate again. Two ways forward, and name the better one first — bundle the clean features with `--id`, or pass `--accept-open-blockers --reason "…"` to hand off knowingly, which writes the accepted ids into `bundle.json` and into `BUNDLE.md` where the next reader will find them.
+
+Your job is to make sure the call is made with open eyes: name the blockers, say who owes the answer, and ask whether to chase them or proceed. If the trend is rising rather than falling, say that out loud — it is the clearest signal the method is not working on this engagement.
 
 ## Bundle
 
@@ -76,7 +78,7 @@ Then hand the BA `next-call-agenda.md`. It lists what the client still owes, blo
 ## Rules with consequences
 
 - **Only `spec-approved` enters a bundle.** "It's basically done" is how development inherits an argument.
-- **The blocker report warns; you do not.** Present the number and the names, let the BA decide, and never quietly proceed past a rising count.
+- **The report warns; the bundle refuses.** Present the number and the names, let the BA decide between bundling what is clean and overriding deliberately, and never reach for the override on their behalf or quietly proceed past a rising count.
 - **Never write the PRD yourself.** bmad-core owns PRD authoring and its reviewer gate; this module owns the quality of the inputs.
 - **Never advance a feature to `handed-off` before the PRD exists.** The status means development has it, and a status that lies breaks every downstream check.
 - **Hand over paths, not a flattened document.** The extraction is `bmad-prd`'s job and it does it better with structure intact.

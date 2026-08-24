@@ -8,8 +8,8 @@ uv run {skill-root}/scripts/fdw_state.py <command> --root {discovery_folder}
 ```
 
 Commands: `init`, `normalize`, `context`, `validate-plan`, `apply-plan`, `record-empty`,
-`feature-set`, `question-close`, `phase-open`, `phase-move`, `phase-close`, `as-built-seed`,
-`validate`. It is the only writer; skills bundle no copy of it. `fdw-intake` owns
+`feature-set`, `question-add`, `question-close`, `phase-open`, `phase-move`, `phase-close`,
+`as-built-seed`, `validate`. It is the only writer; skills bundle no copy of it. `fdw-intake` owns
 this contract file, and `init` copies it into the store as `CONTRACT.md` so the store describes itself.
 
 ## Layout
@@ -110,8 +110,19 @@ Mirrors the registry entry and adds what the index deliberately omits: `summary`
 }
 ```
 
-A resolved question keeps its entry and gains `answer`, `answer_anchor`, `answer_quote`, `resolved`.
-Questions are never deleted — a closed question is evidence that it was asked and answered.
+A resolved question keeps its entry and gains `answer`, `answer_quote`, `resolved`, plus
+`answer_anchor` when the answer arrived in an ingested document or `answer_source` when it arrived
+from sign-off or conversation. Questions are never deleted — a closed question is evidence that it
+was asked and answered.
+
+**This list is the ledger, and it is the only one.** Every gate in the module counts blockers from
+here: `fdw-elaborate approve`, the `fdw-handoff` pre-flight and bundle, `phase-close`'s
+`blocker_count_at_handoff`, the `fdw-status` dashboard, the `questions.md` rollup. A question written
+only into `spec.md` prose is counted by nothing, so `question-add` exists to put it here — `raised_by`
+records where it came from, e.g. `spec F-001 open questions` or `spec F-001 · missing information`.
+
+Ids are minted from the highest already in use, never from how many there are, because a caller may
+supply its own id and the numbering can carry gaps.
 
 ## Lifecycle
 

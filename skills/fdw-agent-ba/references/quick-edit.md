@@ -23,6 +23,10 @@ uv run {project-root}/.claude/skills/fdw-intake/scripts/fdw_state.py <command> -
 ```
 
 - **Size, flags, dependencies, overlaps** — `feature-set --id F-003 --size XL --by fdw-agent-ba --note "…"`
+- **A question he raises in passing** — `question-add --id F-003 --text "…" --criticality critical
+  --owner client --source "…"`. Filing a question is recording a fact, not inventing a requirement,
+  so it is his to do here — but it is a blocker the moment it lands, and if the feature is already
+  spec-approved say so: handoff will refuse to bundle while a critical one is open.
 - **An answered question** — `question-close --question-id F-003-Q-01 --answer "…" --source "…" --quote "…"`
   Use his words as the quote when he gave them; a paraphrase is weaker evidence but still better
   than nothing.

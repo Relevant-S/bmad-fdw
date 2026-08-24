@@ -152,10 +152,17 @@ def cmd_gather(args: argparse.Namespace) -> None:
     problems = []
     if not prototype_files:
         problems.append(f"{entry['id']}: no prototype to show. Run fdw-design before building a packet.")
-    if entry["status"] not in {"client-review", "design-approved", "designing"}:
+    allowed = {"client-review", "design-approved", "designing"}
+    if args.follow_up:
+        # Writing the spec turns up questions only the client can answer, and by then the one
+        # client-facing step is behind us. A short second round is the way back to them.
+        allowed |= {"speccing", "spec-approved"}
+    if entry["status"] not in allowed:
         problems.append(
             f"{entry['id']}: status is '{entry['status']}'. A packet is what you send at client-review; "
             f"run fdw-design's check and advance the feature first."
+            + (" For a spec-stage round, pass --follow-up." if entry["status"] in
+               {"speccing", "spec-approved"} else "")
         )
     if problems:
         die(problems, feature=entry["id"], status=entry["status"])
@@ -256,6 +263,12 @@ def cmd_render(args: argparse.Namespace) -> None:
     out_dir = packets_dir(fdir)
     out_dir.mkdir(parents=True, exist_ok=True)
     page = out_dir / f"{stamp}-{slug}.html"
+    # A follow-up round is the same feature, the same day and a similar headline. Silently
+    # overwriting would destroy a document the client has already been sent.
+    serial = 1
+    while page.exists() and not args.overwrite:
+        serial += 1
+        page = out_dir / f"{stamp}-{slug}-{serial:02d}.html"
 
     # Opaque per-packet tokens. The client's reply travels labelled q1/a1, so answers come back
     # bound to the question that was asked without a single internal id ever leaving the building.
@@ -281,7 +294,7 @@ def cmd_render(args: argparse.Namespace) -> None:
             if q.get("ref")
         ],
     }
-    map_file = out_dir / f"{stamp}-{slug}.map.json"
+    map_file = out_dir / f"{page.stem}.map.json"
     map_file.write_text(json.dumps(mapping, indent=2, ensure_ascii=False), encoding="utf-8")
 
     emit(
@@ -539,6 +552,12 @@ def render(content: dict[str, Any], images: dict[str, str], stamp: str, client: 
 # ---------------------------------------------------------------- responses in
 
 
+LIFECYCLE = [
+    "candidate", "sliced", "designing", "client-review", "design-approved",
+    "speccing", "spec-approved", "handed-off", "shipped",
+]
+
+
 def state_cli() -> str:
     """The shared state CLI ships inside fdw-intake, a sibling once installed. Resolve a real
     path so the commands printed below are ones the BA can actually paste."""
@@ -665,6 +684,21 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 f'{cli} question-close --root {quoted_root} --question-id {meta["ref"]} '
                 f'--answer "{answer}" --source "{mapping.get("packet")}" --quote "{answer}"')
 
+    # An assumption nobody answered is not an assumption anybody confirmed.
+    unanswered_assumptions = [
+        meta.get("we_assumed") for token, meta in tokens.items()
+        if meta.get("kind") == "assumption" and not any(
+            g.get("verdict") for g in by_token.get(token, []))
+    ]
+    unclear = [
+        {"about": meta.get("we_assumed"),
+         "said": [g.get("text", "") for g in by_token.get(token, []) if g.get("text")]}
+        for token, meta in tokens.items()
+        if meta.get("kind") == "assumption"
+        and not any(g.get("verdict") for g in by_token.get(token, []))
+        and any(g.get("text") for g in by_token.get(token, []))
+    ]
+
     asked = [t for t, meta in tokens.items() if meta.get("kind") == "question"]
     closed = {a["ref"] for a in answered}
     unanswered = [tokens[t].get("asked") for t in asked
@@ -684,7 +718,13 @@ def cmd_sync(args: argparse.Namespace) -> None:
         blockers.append(f"{', '.join(said_not_yet)} said the screens are not right yet.")
     if not said_yes:
         blockers.append("Nobody approved. Silence is not sign-off.")
-    if not blockers:
+    if unanswered_assumptions:
+        blockers.append(
+            f"{len(unanswered_assumptions)} assumption(s) we asked them to confirm came back "
+            f"unanswered. Silence is not agreement — these are the guesses that turn into rework.")
+    here = LIFECYCLE.index(entry["status"]) if entry["status"] in LIFECYCLE else 0
+    past_review = here > LIFECYCLE.index("client-review")
+    if not blockers and not past_review:
         commands.append(
             f'{cli} feature-set --root {quoted_root} --id {entry["id"]} --status design-approved '
             f'--by fdw-client-packet --note "approved by {", ".join(said_yes)} via {mapping.get("packet")}"')
@@ -707,13 +747,17 @@ def cmd_sync(args: argparse.Namespace) -> None:
         "conflicts": conflicts,
         "corrections": corrections,
         "unanswered": unanswered,
+        "unanswered_assumptions": unanswered_assumptions,
+        "unclear": unclear,
         "approvals": approvals,
         "recorded": str(record.relative_to(root)),
         "problems": problems,
         "blocked_by": blockers,
         "run": commands,
         "then": ("Send the disagreed assumptions back to fdw-design as corrections."
-                 if corrections else None),
+                 if corrections else
+                 f"Answers recorded. {entry['id']} stays at '{entry['status']}' — re-run "
+                 f"fdw-elaborate check." if past_review else None),
     })
 
 
@@ -727,6 +771,8 @@ def main(argv: list[str] | None = None) -> None:
     p = sub.add_parser("gather", help="everything the packet is written from")
     p.add_argument("--root", required=True)
     p.add_argument("--id", required=True)
+    p.add_argument("--follow-up", dest="follow_up", action="store_true",
+                   help="a second, shorter round for questions the spec turned up")
     p.set_defaults(func=cmd_gather)
 
     p = sub.add_parser("render", help="render the packet, refusing if internal vocabulary leaked")
@@ -737,6 +783,8 @@ def main(argv: list[str] | None = None) -> None:
                    help="capture manifest from fdw_capture.py shots; the deterministic path")
     p.add_argument("--screenshot", action="append",
                    help="Screen name=path.png, for an image the capture harness cannot produce")
+    p.add_argument("--overwrite", action="store_true",
+                   help="replace a packet of the same name instead of starting a new round")
     p.add_argument("--no-reply", action="store_true",
                    help="render without the reply block (a read-only copy, e.g. for an archive)")
     p.add_argument("--client", default=None, help="client name for the header")

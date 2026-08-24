@@ -63,7 +63,7 @@ Write your judged findings to JSON — `verdict`, `ordering`, `findings` (each w
 {audit-cli} rollup --root {discovery_folder}
 ```
 
-`rollup` regenerates the derived top-level `questions.md`. Run it every time; a stale rollup is worse than none because the blocker gate downstream reads it.
+`rollup` regenerates the derived top-level `questions.md`. Run it every time. It is a reading surface, not a gate — every gate counts blockers from `feature.json` — but a stale rollup is what makes a BA believe a question is still open, or miss one that is.
 
 Report to the BA in `{communication_language}`: the one or two findings that change what they do next, then the rest as a tail.
 

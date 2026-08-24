@@ -553,6 +553,136 @@ def test_unknown_feature_lists_what_exists(root, one_feature):
     assert "F-001" in payload["errors"][0]
 
 
+# ---------------------------------------------------------------- question-add (raised outside intake)
+
+FEATURE_JSON = "phases/phase-1/features/F-001-session-management/feature.json"
+
+
+def add(root, **kw):
+    args = ["question-add", "--root", str(root), "--id", "F-001",
+            "--source", kw.pop("source", "spec F-001 open questions")]
+    for flag, value in kw.pop("flags", {}).items():
+        args += [flag, value]
+    return run(*args, **kw)
+
+
+def test_a_question_found_while_speccing_reaches_the_ledger(root, one_feature):
+    """Until this existed, a question could only be born inside apply-plan — so everything the BA
+    found while writing the spec was invisible to approval, pre-flight and the phase blocker count."""
+    out = add(root, flags={"--text": "What precedence order?", "--criticality": "non-critical",
+                           "--owner": "client"})
+    assert out["added"] == ["F-001-Q-02"]
+    record = json.loads((root / FEATURE_JSON).read_text())
+    raised = record["questions"][-1]
+    assert raised["status"] == "open" and raised["owner"] == "client"
+    assert raised["raised_by"] == "spec F-001 open questions"
+
+
+def test_the_registry_mirror_is_updated_so_validate_stays_clean(root, one_feature):
+    """The registry keeps a denormalised count and validate fails the whole store on drift."""
+    add(root, flags={"--text": "What precedence order?", "--criticality": "non-critical",
+                     "--owner": "client"})
+    counts = json.loads((root / "registry.json").read_text())["features"][0]["open_questions"]
+    assert counts == {"critical": 1, "non-critical": 1}
+    assert run("validate", "--root", str(root))["healthy"] is True
+
+
+def test_supplying_the_id_makes_a_re_run_a_no_op(root, one_feature):
+    """The spec carries the minted id, so syncing twice must not breed a second copy."""
+    add(root, flags={"--text": "What precedence order?", "--criticality": "non-critical",
+                     "--owner": "client"})
+    again = add(root, flags={"--question-id": "F-001-Q-02", "--text": "What precedence order?",
+                             "--criticality": "non-critical", "--owner": "client"})
+    assert again["added"] == [] and again["already_present"] == ["F-001-Q-02"]
+    assert len(json.loads((root / FEATURE_JSON).read_text())["questions"]) == 2
+
+
+def test_reusing_an_id_for_different_wording_is_refused(root, one_feature):
+    add(root, flags={"--text": "What precedence order?", "--criticality": "non-critical",
+                     "--owner": "client"})
+    payload = add(root, expect_ok=False,
+                  flags={"--question-id": "F-001-Q-02", "--text": "Something else entirely",
+                         "--criticality": "non-critical", "--owner": "client"})
+    assert "already exists with different wording" in " ".join(payload["errors"])
+
+
+def test_the_same_question_asked_twice_is_refused_unless_you_insist(root, one_feature):
+    add(root, flags={"--text": "What precedence order?", "--criticality": "non-critical",
+                     "--owner": "client"})
+    payload = add(root, expect_ok=False,
+                  flags={"--text": "what precedence order", "--criticality": "critical",
+                         "--owner": "dev"})
+    assert "already open with the same wording" in " ".join(payload["errors"])
+    out = run("question-add", "--root", str(root), "--id", "F-001", "--source", "x",
+              "--text", "what precedence order", "--criticality", "critical", "--owner", "dev",
+              "--allow-duplicate")
+    assert out["added"] == ["F-001-Q-03"]
+
+
+def test_ids_come_from_the_highest_in_use_not_the_count(root, one_feature):
+    """Once a caller may supply an id the list can carry gaps, and length-plus-one walks straight
+    into an id that is already taken."""
+    add(root, flags={"--question-id": "F-001-Q-09", "--text": "gap probe",
+                     "--criticality": "non-critical", "--owner": "dev"})
+    out = add(root, flags={"--text": "after the gap", "--criticality": "non-critical",
+                           "--owner": "dev"})
+    assert out["added"] == ["F-001-Q-10"]
+    ids = [q["id"] for q in json.loads((root / FEATURE_JSON).read_text())["questions"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_a_bad_entry_writes_nothing_at_all(tmp_path, root, one_feature):
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"feature": "F-001", "source": "spec F-001",
+                                 "questions": [
+                                     {"text": "fine", "criticality": "critical", "owner": "dev"},
+                                     {"text": "bad", "criticality": "urgent", "owner": "dev"}]}))
+    payload = run("question-add", "--root", str(root), "--from", str(batch), expect_ok=False)
+    assert "criticality must be one of" in " ".join(payload["errors"])
+    assert payload["hint"] == "Nothing was written."
+    assert len(json.loads((root / FEATURE_JSON).read_text())["questions"]) == 1
+
+
+def test_a_batch_lands_as_one_write_with_a_line_each(tmp_path, root, one_feature):
+    """The bridge mints several at once and the prose may be in any language — one JSON file
+    beats eight shell commands carrying em dashes and apostrophes."""
+    batch = tmp_path / "batch.json"
+    batch.write_text(json.dumps({"feature": "F-001", "source": "spec F-001 · missing information",
+                                 "questions": [
+                                     {"text": "The real seven-row rules table — who owns it?",
+                                      "criticality": "non-critical", "owner": "client"},
+                                     {"text": "Registration volumes for the migration",
+                                      "criticality": "non-critical", "owner": "dev"}]}), encoding="utf-8")
+    out = run("question-add", "--root", str(root), "--from", str(batch))
+    assert out["added"] == ["F-001-Q-02", "F-001-Q-03"]
+    trail = (root / "decisions.md").read_text()
+    assert trail.count("raised (") == 2
+    assert "missing information" in trail
+    assert run("validate", "--root", str(root))["healthy"] is True
+
+
+def test_a_question_needs_a_source_because_a_guess_is_not_evidence(root, one_feature):
+    payload = run("question-add", "--root", str(root), "--id", "F-001", "--text", "x",
+                  "--criticality", "critical", "--owner", "dev", expect_ok=False)
+    assert "--source is required" in " ".join(payload["errors"])
+
+
+def test_raising_against_an_approved_spec_works_but_warns(root, one_feature):
+    """A late blocker is exactly the case only a bundle-time gate catches, so it must be sayable."""
+    for stage in ("designing", "client-review", "design-approved", "speccing", "spec-approved"):
+        run("feature-set", "--root", str(root), "--id", "F-001", "--status", stage)
+    out = add(root, flags={"--text": "New contradiction from the latest call",
+                           "--criticality": "critical", "--owner": "client"})
+    assert out["added"] == ["F-001-Q-02"]
+    assert any("refuse to bundle" in w for w in out["warnings"])
+
+
+def test_an_unknown_feature_lists_what_exists(root, one_feature):
+    payload = run("question-add", "--root", str(root), "--id", "F-404", "--source", "x",
+                  "--text", "x", "--criticality", "critical", "--owner", "dev", expect_ok=False)
+    assert "F-001" in payload["errors"][0]
+
+
 # ---------------------------------------------------------------- question-close (non-document answers)
 
 

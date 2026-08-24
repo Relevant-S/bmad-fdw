@@ -47,11 +47,21 @@ Set **Size** (XS–XL) with the reasoning in a line, and record dependencies. Bo
 
 If the feature turns out to be three features, say so and record the intended delivery slices in the spec — but re-slicing the registry belongs to `fdw-intake`, which holds the source evidence. Route it there rather than splitting here.
 
-## Triage and close the questions
+## File the questions, then close what you can
 
-Every open question gets a criticality and an owner. **Critical** means development cannot start without it; everything else is non-critical, and inflating that distinction is how a blocker list becomes noise. Owner is `client`, `internal`, or `dev` — who actually has to answer it.
+Every open question gets a criticality and an owner, written into the spec in the shape the sections show: `- **critical** (client) — the question`. **Critical** means development cannot start without it; everything else is non-critical. Owner is `client`, `internal`, or `dev` — who actually has to answer it. `## Missing information` takes the same shape, because a gap nobody has asked about yet still stops the same build; default those to non-critical unless the build genuinely stops without them.
 
-Then close what you can. An answer that arrived in a document goes through `fdw-intake`, which anchors it. One that arrived in conversation goes through `{state-cli} question-close`. Chase the critical ones before approving; that is the whole point of the next step.
+**Prose is counted by nothing.** The ledger in `feature.json` is what approval, the pre-flight report, the phase's own blocker count and the dashboard all read, and a question that lives only in `spec.md` is invisible to every one of them. So:
+
+```
+{spec-cli} questions --root {discovery_folder} --id <F-NNN>
+```
+
+It stamps an id into each unfiled bullet — the same way requirements get theirs — and prints one command that files them. Run that command. `check` and `approve` both refuse until spec and ledger agree, and `--accept-open-blockers` does **not** get you past that: accepting a blocker you can name is a decision, hiding one nobody has recorded is not.
+
+It also reports where the two have drifted: a question deleted from the spec but still open in the ledger (`--reconcile` writes it back), one already answered but still listed, and a criticality or owner the two disagree on. It resolves none of them — renaming a question means closing it and raising a new one, because ids never change meaning.
+
+Then close what you can. An answer that arrived in a document goes through `fdw-intake`, which anchors it. One that arrived in conversation goes through `{state-cli} question-close`. A question only the client can answer, found now rather than at design time, goes back to them — `fdw-client-packet` has a `--follow-up` round for exactly this.
 
 ## Approve
 
@@ -60,7 +70,9 @@ Then close what you can. An answer that arrived in a document goes through `fdw-
 {spec-cli} approve --root {discovery_folder} --id <F-NNN>   # mints ids, marks it approved
 ```
 
-Approve **refuses while any critical question is open**, and names them. This is the gate the whole module is measured on: a blocker that survives approval survives into the PRD, and driving that count to zero is the point. `--accept-open-blockers` exists for the case where the BA knowingly proceeds — it records what it let through, in the spec and in the log. Reach for it as a decision, never as a way past the message.
+Approve **refuses while any question is open** — not only the critical ones — and names each with its criticality and owner. This is the gate the whole module is measured on: a question this spec still asks is a question the phase PRD will ask, and driving that count to zero is the point. The bar is deliberately at every question, because the eight that reached a real PRD unresolved were every one of them marked non-critical.
+
+`--accept-open-blockers` exists for the case where the BA knowingly proceeds — it records what it let through, in the spec and in the log. Reach for it as a decision, never as a way past the message; and it will not move a spec whose questions were never filed in the first place.
 
 Approval mints stable requirement ids (`F-001-R-01`) in document order. Drafts stay unnumbered on purpose so they can churn freely; once minted, ids never move — a requirement inserted later gets the next number rather than shifting everything below it. Then run the `feature-set` command the tool prints, which advances the feature to `spec-approved` and makes it eligible for a handoff bundle.
 

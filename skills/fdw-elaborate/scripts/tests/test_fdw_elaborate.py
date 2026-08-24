@@ -38,7 +38,8 @@ def store(tmp_path):
         "current_phase": "phase-1", "phases": ["phase-1"],
         "features": [{"id": "F-001", "title": "Academy", "slug": "academy", "phase": "phase-1",
                       "status": "design-approved", "flags": [], "size": None,
-                      "depends_on": ["F-002"], "overlaps": ["F-002"]}],
+                      "depends_on": ["F-002"], "overlaps": ["F-002"],
+                      "open_questions": {"critical": 1, "non-critical": 1}}],
     }))
     (fdir / "feature.json").write_text(json.dumps({
         "id": "F-001", "title": "Academy", "status": "design-approved", "summary": "Learning area.",
@@ -67,7 +68,8 @@ def store(tmp_path):
     return root
 
 
-def write_spec(store, *, requirements=None, stub_sections=(), size="M"):
+def write_spec(store, *, requirements=None, stub_sections=(), size="M", open_questions=None,
+               missing_information="None outstanding."):
     """A complete spec unless the test asks for a hole in it."""
     fdir = store / "phases/phase-1/features/F-001-academy"
     reqs = requirements if requirements is not None else [
@@ -86,9 +88,11 @@ def write_spec(store, *, requirements=None, stub_sections=(), size="M"):
         "Requirements": "\n".join(reqs),
         "Out of scope": "- Payment for courses.",
         "Assumptions": "- A course is publishable before sessions exist (confirmed by the client).",
-        "Open questions": "- **critical** (client) — Which Events parts are reused?",
+        "Open questions": open_questions if open_questions is not None else (
+            "- **[F-001-Q-01]** **critical** (client) — Which Events parts are reused?\n"
+            "- **[F-001-Q-02]** **non-critical** (internal) — Copy for the empty list?"),
         "Contradictions": "None found.",
-        "Missing information": "None outstanding.",
+        "Missing information": missing_information,
     }
     for name in SECTIONS:
         body = "_Not written yet._" if name in stub_sections else filler[name]
@@ -97,7 +101,8 @@ def write_spec(store, *, requirements=None, stub_sections=(), size="M"):
     return fdir / "spec.md"
 
 
-def close_all_critical(store):
+def close_all_questions(store):
+    """Approval now refuses on any open question, not only the critical ones."""
     fdir = store / "phases/phase-1/features/F-001-academy"
     record = json.loads((fdir / "feature.json").read_text())
     for q in record["questions"]:
@@ -194,17 +199,31 @@ def test_check_without_a_spec_names_the_scaffold_command(store):
 # ---------------------------------------------------------------- the approval gate
 
 
-def test_approval_refuses_while_a_critical_question_is_open(store):
+def test_approval_refuses_while_any_question_is_open(store):
+    """Not just the critical ones. Every question in the epp spec that reached the PRD was marked
+    non-critical, so a critical-only gate would have let that PRD through unchanged."""
     write_spec(store)
     payload = run("approve", "--root", str(store), "--id", "F-001", expect_ok=False)
     joined = " ".join(payload["errors"])
-    assert "F-001-Q-01 (client)" in joined
+    assert "F-001-Q-01 (critical · client)" in joined
+    assert "F-001-Q-02 (non-critical · internal)" in joined
+    assert "2 question(s) still open (1 critical)" in joined
     assert "drive to zero" in joined
+
+
+def test_approval_refuses_on_a_non_critical_question_alone(store):
+    write_spec(store)
+    fdir = store / "phases/phase-1/features/F-001-academy"
+    record = json.loads((fdir / "feature.json").read_text())
+    record["questions"][0]["status"] = "resolved"
+    (fdir / "feature.json").write_text(json.dumps(record))
+    payload = run("approve", "--root", str(store), "--id", "F-001", expect_ok=False)
+    assert "1 question(s) still open (0 critical)" in " ".join(payload["errors"])
 
 
 def test_approval_succeeds_once_blockers_are_closed_and_mints_ids(store):
     write_spec(store)
-    close_all_critical(store)
+    close_all_questions(store)
     out = run("approve", "--root", str(store), "--id", "F-001")
     assert out["minted"] == ["F-001-R-01", "F-001-R-02"]
     text = (store / out["spec"]).read_text()
@@ -215,7 +234,7 @@ def test_approval_succeeds_once_blockers_are_closed_and_mints_ids(store):
 
 def test_reapproval_preserves_ids_and_only_numbers_what_is_new(store):
     write_spec(store)
-    close_all_critical(store)
+    close_all_questions(store)
     run("approve", "--root", str(store), "--id", "F-001")
     spec = store / "phases/phase-1/features/F-001-academy/spec.md"
     text = spec.read_text().replace(
@@ -233,15 +252,17 @@ def test_reapproval_preserves_ids_and_only_numbers_what_is_new(store):
 def test_the_override_is_available_and_records_what_it_let_through(store):
     write_spec(store)
     out = run("approve", "--root", str(store), "--id", "F-001", "--accept-open-blockers")
-    assert out["approved_with_open_blockers"] == ["F-001-Q-01"]
+    assert out["approved_with_open_blockers"] == ["F-001-Q-01", "F-001-Q-02"]
     text = (store / out["spec"]).read_text()
     assert "## Approved with open blockers" in text
-    assert "F-001-Q-01" in text and "travel into the phase PRD unresolved" in text
+    assert "travel into the phase PRD unresolved" in text
+    # critical first, and each one says which it is, so the section does not imply all are critical
+    assert text.index("F-001-Q-01 (critical") < text.index("F-001-Q-02 (non-critical")
 
 
 def test_approval_refuses_while_a_change_record_is_open(store):
     write_spec(store)
-    close_all_critical(store)
+    close_all_questions(store)
     (store / "phases/phase-1/features/F-001-academy/changes.md").write_text(
         "\n## 2026-08-25 — change raised by client-call\n\n- what: sessions may overlap\n"
         "- resolution: OPEN — route through fdw-elaborate. Intake never edits an approved spec.\n")
@@ -251,7 +272,7 @@ def test_approval_refuses_while_a_change_record_is_open(store):
 
 def test_a_structurally_broken_spec_cannot_be_approved(store):
     write_spec(store, requirements=["- Courses can be archived."])
-    close_all_critical(store)
+    close_all_questions(store)
     payload = run("approve", "--root", str(store), "--id", "F-001", expect_ok=False)
     assert any("no provenance" in e for e in payload["errors"])
 
@@ -292,7 +313,7 @@ def test_scaffold_points_at_marking_the_feature_speccing(store):
 def test_approve_walks_every_gate_from_where_the_feature_is(store):
     """A single spec-approved command would be refused from design-approved."""
     write_spec(store)
-    close_all_critical(store)
+    close_all_questions(store)
     steps = run("approve", "--root", str(store), "--id", "F-001")["next"]
     assert [s.split("--status ")[1].split(" ")[0] for s in steps] == ["speccing", "spec-approved"]
     assert "--size M" in steps[-1]
@@ -303,6 +324,127 @@ def test_approve_from_speccing_is_a_single_step(store):
     registry["features"][0]["status"] = "speccing"
     (store / "registry.json").write_text(json.dumps(registry))
     write_spec(store)
-    close_all_critical(store)
+    close_all_questions(store)
     steps = run("approve", "--root", str(store), "--id", "F-001")["next"]
     assert len(steps) == 1 and "--status spec-approved" in steps[0]
+
+
+# ---------------------------------------------------------------- the spec-to-ledger bridge
+
+STATE = Path(__file__).resolve().parents[3] / "fdw-intake" / "scripts" / "fdw_state.py"
+
+
+def state(*args, expect_ok=True):
+    """expect_ok=None when the call's success is not what the test is about."""
+    result = subprocess.run([sys.executable, str(STATE), *args], capture_output=True, text=True)
+    payload = json.loads(result.stdout)
+    if expect_ok is not None:
+        assert payload.get("ok") is expect_ok, payload
+    return payload
+
+
+def ledger(store):
+    fdir = store / "phases/phase-1/features/F-001-academy"
+    return {q["id"]: q for q in json.loads((fdir / "feature.json").read_text())["questions"]}
+
+
+def test_a_question_written_only_in_prose_is_minted_and_filed(store):
+    """The defect: prose is counted by nothing. Eight questions reached a real PRD this way."""
+    write_spec(store, open_questions="- **critical** (client) — Which precedence order?")
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    assert out["minted"] == ["F-001-Q-04"]
+    spec = (store / "phases/phase-1/features/F-001-academy/spec.md").read_text()
+    assert "- **[F-001-Q-04]** **critical** (client) — Which precedence order?" in spec
+    assert out["run"] and "question-add" in out["run"][0]
+
+    state(*out["run"][0].split()[3:])
+    assert "F-001-Q-04" in ledger(store)
+    again = run("questions", "--root", str(store), "--id", "F-001")
+    assert again["minted"] == [] and again["run"] == []
+
+
+def test_missing_information_is_filed_too_under_its_own_origin(store):
+    """Four of the eleven questions in the real PRD came from this section."""
+    write_spec(store, missing_information="- **non-critical** (client) — The real rules table.")
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    assert out["minted"] == ["F-001-Q-04"]
+    state(*out["run"][-1].split()[3:])
+    assert ledger(store)["F-001-Q-04"]["raised_by"].endswith("missing information")
+
+
+def test_check_and_approve_both_refuse_until_the_prose_is_filed(store):
+    write_spec(store, open_questions="- **critical** (client) — Which precedence order?")
+    for command in ("check", "approve"):
+        payload = run(command, "--root", str(store), "--id", "F-001", expect_ok=False)
+        assert "not in the ledger" in " ".join(payload["errors"])
+
+
+def test_the_override_cannot_hide_a_question_the_ledger_never_heard_of(store):
+    """--accept-open-blockers accepts KNOWN blockers. A prose id with no ledger entry is an
+    unknown one, and letting it through is the whole failure this change exists to stop."""
+    write_spec(store, open_questions="- **[F-001-Q-77]** **critical** (client) — Never filed.")
+    payload = run("approve", "--root", str(store), "--id", "F-001",
+                  "--accept-open-blockers", expect_ok=False)
+    assert "F-001-Q-77" in " ".join(payload["errors"])
+
+
+def test_a_bullet_nobody_can_parse_is_named_not_skipped(store):
+    """A question silently dropped on the floor is the bug class being fixed."""
+    write_spec(store, open_questions="- we should probably ask about the ordering")
+    payload = run("check", "--root", str(store), "--id", "F-001", expect_ok=False)
+    joined = " ".join(payload["errors"])
+    assert "does not parse" in joined and "ordering" in joined
+
+
+def test_a_question_deleted_from_the_spec_is_reported_and_can_be_restored(store):
+    write_spec(store, open_questions="- **[F-001-Q-01]** **critical** (client) — Which parts?")
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    assert out["missing_from_prose"] == ["F-001-Q-02"]
+    restored = run("questions", "--root", str(store), "--id", "F-001", "--reconcile")
+    assert restored["restored"] == ["F-001-Q-02"]
+    spec = (store / "phases/phase-1/features/F-001-academy/spec.md").read_text()
+    assert "**[F-001-Q-02]** **non-critical** (internal) — Copy for the empty list?" in spec
+    assert run("questions", "--root", str(store), "--id", "F-001")["missing_from_prose"] == []
+
+
+def test_a_resolved_question_still_in_the_spec_is_reported(store):
+    write_spec(store, open_questions=(
+        "- **[F-001-Q-01]** **critical** (client) — Which parts?\n"
+        "- **[F-001-Q-02]** **non-critical** (internal) — Copy?\n"
+        "- **[F-001-Q-03]** **critical** (client) — Certificate export?"))
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    assert out["resolved_still_in_prose"] == ["F-001-Q-03"]
+
+
+def test_triage_disagreement_is_reported_never_silently_resolved(store):
+    write_spec(store, open_questions=(
+        "- **[F-001-Q-01]** **non-critical** (dev) — Which parts?\n"
+        "- **[F-001-Q-02]** **non-critical** (internal) — Copy?"))
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    assert out["triage_drift"] == [
+        {"id": "F-001-Q-01", "spec": "non-critical/dev", "ledger": "critical/client"}]
+    assert ledger(store)["F-001-Q-01"]["criticality"] == "critical", "nothing may be rewritten"
+
+
+def test_the_full_loop_keeps_the_registry_mirror_honest(store):
+    """The registry keeps a denormalised count that validate fails the whole store on."""
+    write_spec(store, open_questions="- **critical** (dev) — How does migration resolve?")
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    state(*out["run"][0].split()[3:])
+    report = state("validate", "--root", str(store), expect_ok=None)
+    problems = report.get("problems", []) + report.get("errors", [])
+    assert not any("open_questions count is stale" in p for p in problems), problems
+
+
+def test_a_question_that_wraps_across_lines_is_filed_whole(store):
+    """Real specs wrap. A ledger entry cut off mid-sentence is useless to the person answering it."""
+    write_spec(store, open_questions=(
+        "- **critical** (client) — Should a person's account record several kinds of person\n"
+        "  permanently, or is per-event categorisation on the registration enough?"))
+    out = run("questions", "--root", str(store), "--id", "F-001")
+    state(*out["run"][0].split()[3:])
+    text = ledger(store)["F-001-Q-04"]["text"]
+    assert text.endswith("on the registration enough?")
+    spec = (store / "phases/phase-1/features/F-001-academy/spec.md").read_text()
+    assert "permanently, or is per-event" in spec
+    assert run("questions", "--root", str(store), "--id", "F-001")["minted"] == []

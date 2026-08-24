@@ -536,3 +536,67 @@ def test_a_packet_sent_from_the_old_location_can_still_be_replied_to(tmp_path, s
     assert result["recorded"].startswith("phases/phase-1/client-packets/"), \
         "replies are filed beside the packet they answer, not somewhere it never was"
     assert Path(run("gather", "--root", str(store), "--id", "F-001")["prior_packets"][0]).name
+
+
+# ---------------------------------------------------------------- the spec-stage round
+
+
+def at_status(store, status):
+    registry = json.loads((store / "registry.json").read_text())
+    registry["features"][0]["status"] = status
+    (store / "registry.json").write_text(json.dumps(registry))
+
+
+def test_a_spec_stage_packet_needs_the_follow_up_flag(store):
+    """Writing the spec turns up questions only the client can answer, and by then the one
+    client-facing step is behind us."""
+    at_status(store, "spec-approved")
+    payload = run("gather", "--root", str(store), "--id", "F-001", expect_ok=False)
+    assert "--follow-up" in " ".join(payload["errors"])
+    assert run("gather", "--root", str(store), "--id", "F-001", "--follow-up")["feature"] == "F-001"
+
+
+def test_a_follow_up_round_never_walks_the_feature_backwards(tmp_path, store):
+    """feature-set allows backward moves unconditionally, so emitting sign-off here would
+    silently un-approve the spec and drop the feature out of bundle eligibility."""
+    out = rendered(tmp_path, store)
+    at_status(store, "spec-approved")
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Two tabs."}, "a1": {"verdict": "agree"}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert any("question-close" in c for c in result["run"])
+    assert not any("feature-set" in c for c in result["run"])
+    assert "stays at 'spec-approved'" in result["then"]
+
+
+def test_a_second_round_does_not_overwrite_the_document_already_sent(tmp_path, store):
+    first = rendered(tmp_path, store)
+    second = rendered(tmp_path, store)
+    assert first["packet"] != second["packet"]
+    assert (store / first["packet"]).exists() and (store / second["packet"]).exists()
+    assert (store / second["map"]).name == Path(second["packet"]).stem + ".map.json"
+
+
+# ---------------------------------------------------------------- silence is not agreement
+
+
+def test_an_assumption_nobody_answered_blocks_sign_off(tmp_path, store):
+    """The real case: the packet asked about A16, the client answered everything else and
+    approved, and sign-off went through as if they had agreed."""
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Two tabs."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert result["unanswered_assumptions"] == ["A course can be published before sessions exist."]
+    assert any("Silence is not agreement" in b for b in result["blocked_by"])
+    assert not any("design-approved" in c for c in result["run"])
+
+
+def test_a_comment_without_a_verdict_is_unclear_not_agreement(tmp_path, store):
+    out = rendered(tmp_path, store)
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name,
+                   answers={"q1": {"text": "Two tabs."},
+                            "a1": {"text": "depends what you mean by published"}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert result["unclear"][0]["said"] == ["depends what you mean by published"]
+    assert result["unanswered_assumptions"], "no verdict means no confirmation"
