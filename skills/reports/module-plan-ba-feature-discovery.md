@@ -387,7 +387,7 @@ description plus the specific questions we need them to answer — and fold thei
 
 | Capability | Outcome | Inputs | Outputs |
 | --- | --- | --- | --- |
-| Assemble packet | The client gets one self-contained thing to review | Prototype screens, ux-notes (translated to plain language), feature.json | Self-contained HTML packet under `phases/{n}/client-packets/`, readable on a phone |
+| Assemble packet | The client gets one self-contained thing to review | Prototype screens, ux-notes (translated to plain language), feature.json | Self-contained HTML packet under the feature's own `client-packets/`, readable on a phone |
 | Surface client questions | The client answers exactly what we need, nothing more | Feature `questions.md` filtered to `owner: client` | Numbered question block in the packet, each tied to the screen it concerns |
 | Show what's assumed | Silent assumptions become explicit sign-off items | `ux-notes.md` assumptions | "We assumed X — correct?" list in client language |
 | Capture feedback | Client comments become state, not an unread email | Client's reply (any form: email, transcript, annotated doc) | Feedback recorded to feature folder; answered questions closed; contradictions raised |
@@ -1102,6 +1102,33 @@ non-raw Python string, so the rendered page carried a real newline inside a JS s
 syntax error that kills the whole reply block silently, in the client's browser, where nothing
 upstream would ever notice. The loop is now tested against a real headless browser end to end: fill
 the form, click Finish, read the block, sync it back.
+
+### Layout correction: packets moved into the feature folder (2026-08-24)
+
+Packets were written to `phases/<phase>/client-packets/`, a flat folder at the root of the phase.
+Asked to justify it, there is no justification. A packet is built from a single feature entry —
+`gather`, `render` and `sync` all take one `--id`, the output path was derived from that entry's own
+phase, and the sidecar map records one feature. It was never a multi-feature artifact.
+
+The flat folder came from this plan's own layout sketch, placed beside `handoff/` by symmetry.
+`handoff/` genuinely is phase-level: it bundles every feature in the phase. `client-packets/` copied
+that shape without having that property, and the result split one feature's artifacts across two
+locations while its design and spec sat together in a third.
+
+Packets now live at `phases/<phase>/features/<F-NNN-slug>/client-packets/`, with the id map and the
+filed replies beside them. Two things were preserved rather than dropped:
+
+- **The phase-wide view.** `gather` still reports every packet sent in the phase, now as
+  `packets_this_phase` gathered by glob, alongside this feature's own `prior_packets`. The useful
+  question — what has this client already been sent — did not depend on the flat folder.
+- **Stores built before the move.** `sync` reads the feature folder first and the old phase-level
+  folder second. A client who has already been sent a packet is owed a working reply path, and a
+  layout correction is not a reason to strand one.
+
+Found alongside it: `gather` hardcoded the prototype at `design/prototype` while `fdw_design` and
+`fdw_capture` both resolve `prototype_dir` from `grounding.json`. Any feature whose design put the
+prototype elsewhere was reported as having no prototype at all, and the packet refused to build.
+All three now resolve it the same way.
 
 **Next steps:**
 

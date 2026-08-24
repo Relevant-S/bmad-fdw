@@ -64,7 +64,7 @@ The reply travels labelled `q1`, `a2`. **No internal id is ever in the client's 
 
 If the vocabulary gate fires, rewrite the flagged text. Do not reach for `--allow-jargon`; it exists for an internal preview, not for anything leaving the building. `--no-reply` renders a read-only copy for an archive.
 
-Give the BA the `.html` path. Tell them to send that one file, that the `.map.json` beside it is internal, and — worth saying out loud to the client — that the page submits nothing anywhere on its own.
+The packet lands in `client-packets/` inside the feature's own folder, beside its design and its spec — everything about one feature in one place. Give the BA that `.html` path. Tell them to send that one file, that the `.map.json` beside it is internal, and — worth saying out loud to the client — that the page submits nothing anywhere on its own.
 
 ## Record what comes back
 

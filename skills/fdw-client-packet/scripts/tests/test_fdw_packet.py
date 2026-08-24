@@ -486,3 +486,53 @@ def test_the_reply_actually_runs_in_a_browser_and_syncs_back(tmp_path, store):
     assert result["answered"][0]["answer"] == "Two tabs only."
     assert result["corrections"][0]["instead"] == ["It needs one session."]
     assert any("--status design-approved" in c for c in result["run"])
+
+
+# ---------------------------------------------------------------- where things live
+
+
+def test_gather_finds_the_prototype_wherever_grounding_put_it(store):
+    """Hardcoding design/prototype reported a prototype that plainly exists as missing, and the
+    packet refused to build for a feature whose design had been written elsewhere."""
+    design = store / "phases/phase-1/features/F-001-academy/design"
+    moved = design / "prototypes" / "F-001"
+    moved.mkdir(parents=True)
+    (moved / "S1-course-list.html").write_text("<section data-screen='S1'>list</section>")
+    (design / "prototype" / "CourseList.tsx").unlink()
+    (design / "grounding.json").write_text(json.dumps(
+        {"mode": "extracted", "prototype_dir": "prototypes/F-001", "screens": []}))
+    out = run("gather", "--root", str(store), "--id", "F-001")
+    assert any("S1-course-list.html" in f for f in out["prototype_files"])
+
+
+def test_the_packet_lives_with_the_feature_it_describes(tmp_path, store):
+    """One feature's design, spec and packet in one folder. A packet is built from a single
+    feature entry, so nothing justified keeping it somewhere else."""
+    out = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path))
+    assert out["packet"].startswith("phases/phase-1/features/F-001-academy/client-packets/")
+    assert (store / out["packet"]).exists()
+    assert (store / out["map"]).parent == (store / out["packet"]).parent
+    assert not (store / "phases/phase-1/client-packets").exists()
+
+
+def test_gather_points_at_the_feature_folder(store):
+    out = run("gather", "--root", str(store), "--id", "F-001")
+    assert out["packets_dir"] == "phases/phase-1/features/F-001-academy/client-packets"
+
+
+def test_a_packet_sent_from_the_old_location_can_still_be_replied_to(tmp_path, store):
+    """A store built before the move holds real documents a client has already been sent."""
+    out = run("render", "--root", str(store), "--id", "F-001", "--content", content(tmp_path))
+    legacy = store / "phases/phase-1/client-packets"
+    legacy.mkdir(parents=True)
+    for suffix in (".html", ".map.json"):
+        moved = Path(out["packet"] if suffix == ".html" else out["map"])
+        (legacy / moved.name).write_text((store / moved).read_text())
+        (store / moved).unlink()
+
+    answer = reply(tmp_path, "Sasha", Path(out["packet"]).name, answers={"q1": {"text": "Two tabs."}})
+    result = run("sync", "--root", str(store), "--id", "F-001", "--response", answer)
+    assert result["answered"][0]["answer"] == "Two tabs."
+    assert result["recorded"].startswith("phases/phase-1/client-packets/"), \
+        "replies are filed beside the packet they answer, not somewhere it never was"
+    assert Path(run("gather", "--root", str(store), "--id", "F-001")["prior_packets"][0]).name

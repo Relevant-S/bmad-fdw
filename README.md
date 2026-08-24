@@ -424,8 +424,8 @@ discovery/
     │   │       ├── signal.md      The evidence and quotes behind this feature
     │   │       ├── design/        The prototype and the design notes
     │   │       ├── spec.md        ← the specification
-    │   │       └── changes.md     Changes raised after approval
-    │   ├── client-packets/        ← the pages you sent the client
+    │   │       ├── changes.md     Changes raised after approval
+    │   │       └── client-packets/  ← the pages you sent the client, and their replies
     │   └── handoff/               ← the bundle and the next call's agenda
     └── phase-2/
 ```
@@ -435,7 +435,7 @@ discovery/
 | File | What it is for |
 | --- | --- |
 | `spec.md` inside a feature folder | The specification. This is the main output. |
-| `client-packets/*.html` | What you emailed the client. Open it in a browser. |
+| `client-packets/*.html` inside a feature folder | What you emailed the client. Open it in a browser. |
 | `decisions.md` | Why anything is the way it is. Search this when someone asks. |
 
 ### The one file not to edit

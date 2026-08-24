@@ -76,6 +76,27 @@ def locate(root: Path, feature_id: str) -> tuple[Path, dict[str, Any]]:
     return root / "phases" / entry["phase"] / "features" / f"{entry['id']}-{entry['slug']}", entry
 
 
+def prototype_dir(design: Path) -> Path:
+    """Wherever grounding.json says, the same way fdw_design and fdw_capture resolve it.
+    Hardcoding design/prototype here reported a prototype that plainly exists as missing."""
+    grounding = read_json(design / "grounding.json", {}) or {}
+    declared = Path(grounding.get("prototype_dir") or "prototype")
+    return declared if declared.is_absolute() else design / declared
+
+
+def packets_dir(fdir: Path) -> Path:
+    """A packet is built from one feature entry, so it belongs with that feature's other
+    artifacts rather than in a phase-level folder beside them."""
+    return fdir / "client-packets"
+
+
+def legacy_packets_dir(root: Path, entry: dict[str, Any]) -> Path:
+    """Where packets were written before they moved into the feature folder. Read-only: a store
+    built by an earlier version still has real documents there, and a client who has been sent
+    one is owed a working reply path."""
+    return root / "phases" / entry["phase"] / "client-packets"
+
+
 # ---------------------------------------------------------------- gather
 
 
@@ -112,7 +133,7 @@ def cmd_gather(args: argparse.Namespace) -> None:
             for gid, body in re.findall(r"^\s*-\s+\*\*(G\d+)\*\*[^—]*—\s*(.+)$", empty.read_text(encoding="utf-8"), re.M)
         ]
 
-    proto = design / "prototype"
+    proto = prototype_dir(design)
     prototype_files = sorted(str(p.relative_to(fdir)) for p in proto.rglob("*") if p.is_file()) if proto.is_dir() else []
 
     client_questions = [
@@ -121,8 +142,11 @@ def cmd_gather(args: argparse.Namespace) -> None:
         if q.get("status", "open") == "open" and q.get("owner") == "client"
     ]
 
-    packets_dir = root / "phases" / entry["phase"] / "client-packets"
-    prior = sorted(p.name for p in packets_dir.glob("*.html")) if packets_dir.is_dir() else []
+    out_dir = packets_dir(fdir)
+    prior = sorted(p.name for d in (out_dir, legacy_packets_dir(root, entry))
+                   if d.is_dir() for p in d.glob("*.html"))
+    phase_dir = root / "phases" / entry["phase"] / "features"
+    in_phase = sorted(p.name for p in phase_dir.glob("*/client-packets/*.html")) if phase_dir.is_dir() else []
 
     unconfirmed = [a for a in assumptions if a["status"] == "unconfirmed"]
     problems = []
@@ -151,7 +175,8 @@ def cmd_gather(args: argparse.Namespace) -> None:
             "client_questions": client_questions,
             "prototype_files": prototype_files,
             "prior_packets": prior,
-            "packets_dir": str(packets_dir.relative_to(root)),
+            "packets_this_phase": in_phase,
+            "packets_dir": str(out_dir.relative_to(root)),
         }
     )
 
@@ -228,7 +253,7 @@ def cmd_render(args: argparse.Namespace) -> None:
 
     stamp = args.date or date.today().isoformat()
     slug = slugify(content.get("headline") or entry["title"])
-    out_dir = root / "phases" / entry["phase"] / "client-packets"
+    out_dir = packets_dir(fdir)
     out_dir.mkdir(parents=True, exist_ok=True)
     page = out_dir / f"{stamp}-{slug}.html"
 
@@ -550,8 +575,8 @@ def parse_response(raw: str) -> dict[str, Any] | None:
     return None
 
 
-def newest_map(out_dir: Path, feature_id: str, packet: str | None) -> Path | None:
-    maps = sorted(out_dir.glob("*.map.json"))
+def newest_map(dirs: list[Path], feature_id: str, packet: str | None) -> Path | None:
+    maps = sorted((m for d in dirs if d.is_dir() for m in d.glob("*.map.json")), key=lambda m: m.name)
     if packet:
         stem = packet[:-5] if packet.endswith(".html") else packet
         maps = [m for m in maps if m.name == f"{stem}.map.json"]
@@ -562,8 +587,8 @@ def newest_map(out_dir: Path, feature_id: str, packet: str | None) -> Path | Non
 def cmd_sync(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
     fdir, entry = locate(root, args.id)
-    out_dir = root / "phases" / entry["phase"] / "client-packets"
-    map_file = newest_map(out_dir, entry["id"], args.packet)
+    out_dir = packets_dir(fdir)
+    map_file = newest_map([out_dir, legacy_packets_dir(root, entry)], entry["id"], args.packet)
     if map_file is None:
         die([f"No packet map for {entry['id']} in {out_dir}. Render the packet before syncing replies."])
     mapping = read_json(map_file, {}) or {}
@@ -666,7 +691,7 @@ def cmd_sync(args: argparse.Namespace) -> None:
 
     # File the raw replies beside the packet. The quote in every question-close has to be
     # traceable to something on disk, or the provenance rule is decoration.
-    record = out_dir / f"{map_file.name[:-len('.map.json')]}.responses.json"
+    record = map_file.parent / f"{map_file.name[:-len('.map.json')]}.responses.json"
     existing = read_json(record, {"packet": mapping.get("packet"), "replies": []}) or {}
     seen = {(r.get("from"), r.get("at")) for r in existing.get("replies", [])}
     for reply in replies:

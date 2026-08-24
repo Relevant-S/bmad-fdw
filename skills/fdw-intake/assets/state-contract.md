@@ -36,8 +36,8 @@ this contract file, and `init` copies it into the store as `CONTRACT.md` so the 
           design/              # fdw-design: prototype/, ux-notes.md, empty-state.md, grounding.json
           spec.md              # fdw-elaborate only — THE SANDBOX
           changes.md           # change records raised after approval
-      client-packets/
-      handoff/
+          client-packets/      # fdw-client-packet: the page sent, its id map, the replies filed
+      handoff/                 # phase-level: the bundle covers every feature in the phase
 ```
 
 ## Machine files are JSON, prose files are Markdown
