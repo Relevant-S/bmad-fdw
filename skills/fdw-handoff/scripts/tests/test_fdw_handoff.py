@@ -345,3 +345,139 @@ def test_a_dependency_that_does_not_exist_at_all_is_distinguished(store):
     (store / "registry.json").write_text(json.dumps(registry))
     out = run("preflight", "--root", str(store), "--phase", "phase-1", "--id", "F-002")
     assert "not in the registry at all" in out["dependency_gaps"][0]["detail"]
+
+
+# ---------------------------------------------------------------- change records
+
+
+def close_critical(root):
+    """The bundle's critical-question gate fires first; these tests are about the change gate."""
+    for fid, slug in (("F-001", "events-agenda"), ("F-002", "academy")):
+        fdir = root / "phases/phase-1/features" / f"{fid}-{slug}"
+        record = json.loads((fdir / "feature.json").read_text())
+        for q in record.get("questions", []):
+            q["status"] = "resolved"
+        (fdir / "feature.json").write_text(json.dumps(record))
+
+
+def _add_change(root, fid, slug, **kw):
+    fdir = root / "phases/phase-1/features" / f"{fid}-{slug}"
+    record = json.loads((fdir / "feature.json").read_text())
+    change = {"id": f"{fid}-C-01", "text": "Blocks must resize.", "status": "open",
+              "route": "in-flight", "design_invalidated": "false", "criticality": "critical",
+              "raised": "2026-08-25", "raised_by": "call", "anchor": None, "quote": None}
+    change.update(kw)
+    record.setdefault("changes", []).append(change)
+    (fdir / "feature.json").write_text(json.dumps(record))
+    return change
+
+
+def test_bundle_refuses_while_a_change_record_is_open(store):
+    _add_change(store, "F-001", "events-agenda")
+    close_critical(store)
+    payload = run("bundle", "--root", str(store), "--phase", "phase-1", expect_ok=False)
+    assert any("open change record" in e for e in payload["errors"])
+    assert payload["open_change_records"] == ["F-001-C-01"]
+    assert payload["clean_features"] == ["F-002"]
+
+
+def test_the_override_records_the_accepted_changes(store):
+    _add_change(store, "F-001", "events-agenda")
+    close_critical(store)
+    run("bundle", "--root", str(store), "--phase", "phase-1",
+        "--accept-open-blockers", "--reason", "client wants it now")
+    manifest = json.loads((store / "phases/phase-1/handoff/bundle.json").read_text())
+    assert manifest["accepted_changes"] == ["F-001-C-01"]
+
+
+def test_a_delivered_change_does_not_block_the_bundle(store):
+    """It ships on its own clock through bmad-build; holding the phase for it would be backwards."""
+    _add_change(store, "F-001", "events-agenda", route="delivered")
+    close_critical(store)
+    run("bundle", "--root", str(store), "--phase", "phase-1")
+
+
+def test_build_brief_refuses_below_handed_off(store):
+    _add_change(store, "F-001", "events-agenda", route="delivered")
+    payload = run("build-brief", "--root", str(store), "--change-id", "F-001-C-01", expect_ok=False)
+    assert "not been handed to development" in payload["errors"][0]
+
+
+def test_build_brief_refuses_an_in_flight_change_and_names_revise(store):
+    _add_change(store, "F-001", "events-agenda")
+    _hand_off(store, "F-001")
+    payload = run("build-brief", "--root", str(store), "--change-id", "F-001-C-01", expect_ok=False)
+    assert "fdw-elaborate revise" in payload["errors"][0]
+
+
+def _hand_off(store, fid):
+    registry = json.loads((store / "registry.json").read_text())
+    for f in registry["features"]:
+        if f["id"] == fid:
+            f["status"] = "handed-off"
+    (store / "registry.json").write_text(json.dumps(registry))
+
+
+def test_build_brief_is_an_intent_file_not_a_resumable_spec(store):
+    """bmad-build routes a file with `status:` frontmatter as a spec to resume. This is intent."""
+    _add_change(store, "F-001", "events-agenda", route="delivered")
+    _hand_off(store, "F-001")
+    out = run("build-brief", "--root", str(store), "--change-id", "F-001-C-01")
+    text = (store / out["brief"]).read_text()
+    assert "status:" not in text.split("---")[1]
+    assert "F-001-C-01" in text
+    assert "## Do not change" in text
+    assert "change-close" in text, "the brief has to say how the loop closes"
+
+
+def test_build_brief_warns_when_the_phase_prd_is_still_in_flight(store):
+    _add_change(store, "F-001", "events-agenda", route="delivered")
+    _hand_off(store, "F-001")
+    phase = store / "phases/phase-1/phase.json"
+    record = json.loads(phase.read_text())
+    record["prd_path"] = "prds/phase-1.md"
+    phase.write_text(json.dumps(record))
+    out = run("build-brief", "--root", str(store), "--change-id", "F-001-C-01")
+    assert any("cheaper than a side-channel build" in w for w in out["warnings"])
+
+
+def test_build_brief_reports_what_it_left_out(store):
+    _add_change(store, "F-001", "events-agenda", route="delivered",
+                text="Agenda blocks must resize to their content.")
+    _hand_off(store, "F-001")
+    out = run("build-brief", "--root", str(store), "--change-id", "F-001-C-01",
+              "--max-requirements", "1")
+    assert out["requirements_shown"] == 1
+    assert out["requirements_omitted"] == 1
+    assert any("not in the brief" in w for w in out["warnings"]), "silent truncation reads as coverage"
+
+
+def test_as_built_rebuild_replaces_the_section_and_keeps_the_ship_date(store):
+    _hand_off(store, "F-001")
+    _hand_off(store, "F-002")
+    run("as-built", "--root", str(store), "--phase", "phase-1", "--date", "2026-08-01")
+    payload = run("as-built", "--root", str(store), "--phase", "phase-1", expect_ok=False)
+    assert "--rebuild" in payload["errors"][0]
+    run("as-built", "--root", str(store), "--phase", "phase-1", "--rebuild")
+    text = (store / "as-built.md").read_text()
+    assert text.count("## phase-1") == 1, "rebuild replaces, it does not append"
+    assert "_Shipped 2026-08-01" in text, "a rebuild must not restamp when the phase shipped"
+
+
+def test_as_built_marks_a_change_absorbed_but_not_yet_shipped(store):
+    _hand_off(store, "F-001")
+    _add_change(store, "F-001", "events-agenda", route="delivered", status="absorbed",
+                outcome="absorbed", absorbed_by=["F-001-R-01"], resolved="2026-08-26")
+    run("as-built", "--root", str(store), "--phase", "phase-1")
+    text = (store / "as-built.md").read_text()
+    assert "has not shipped" in text, "as-built states what shipped, not what is planned"
+
+
+def test_as_built_marks_a_delivered_amendment(store):
+    _hand_off(store, "F-001")
+    _add_change(store, "F-001", "events-agenda", route="delivered", status="delivered",
+                outcome="delivered", absorbed_by=["F-001-R-01"], resolved="2026-08-26")
+    run("as-built", "--root", str(store), "--phase", "phase-1")
+    text = (store / "as-built.md").read_text()
+    assert "_(amended 2026-08-26" in text
+    assert "_Amended 2026-08-26" in text

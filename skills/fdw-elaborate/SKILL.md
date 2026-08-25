@@ -78,16 +78,34 @@ Approval mints stable requirement ids (`F-001-R-01`) in document order. Drafts s
 
 ## When something changes after approval
 
-New input that contradicts an approved spec arrives as a **change record** in `changes.md`, written by `fdw-intake` — which never edits an approved spec itself. Absorb it: update the requirements, then
+Clients change their minds, and the spec exists *because* that is cheap to absorb. New input that contradicts an approved spec becomes a **change record** with its own id — `F-001-C-01` — raised by `fdw-intake` when it arrived as a document, or by `{state-cli} change-add` when it arrived in conversation. Either way it carries a source, because on a fixed-price contract that is the difference between absorbing a change and billing it.
+
+**The record decides which of two paths you are on, and it decides from the feature's status when the change was raised.** Do not work it out yourself:
 
 ```
-{spec-cli} close-change --root {discovery_folder} --id <F-NNN> --resolution "absorbed as R-04; …"
+{spec-cli} revise --root {discovery_folder} --id <F-NNN>
 ```
 
-If the feature was already handed to development, the change belongs to the next phase by default. Say so plainly rather than quietly rewriting something a team is already building.
+**In-flight** — the feature had not been handed to development. The spec reopens. `revise` prints the one backward `feature-set` command that does it, with a note, so rework is visible in the log rather than silent. If any open change has `design_invalidated: true`, it reopens to `designing` instead and prints the `fdw-design` and `fdw-client-packet` commands too — the client signed *those screens*, and a visual change means their sign-off no longer covers it.
+
+**Delivered** — the feature is already `handed-off` or `shipped`. `revise` refuses and names `fdw-handoff build-brief`, which writes an intent file for `/bmad-build` so the change ships on its own clock instead of waiting for a phase it missed. The feature's status does **not** move: it is a fact about delivery, not about your work.
+
+Either way, once the spec says what the change asked for:
+
+```
+{spec-cli} absorb --root {discovery_folder} --id <F-NNN> --change-id <F-NNN-C-NN> \
+  --resolution "…" --absorbed-by <requirement id>
+```
+
+`absorb` will not take your word for it. It hashes `## Requirements` when the change is raised and compares; a section byte-identical to when the change arrived means nothing was absorbed. It stamps `_(amended …)_` on the requirements you name and `_(superseded …)_` on the ones the change withdraws — **keeping every id and every position**, because `as-built.md` and the phase PRD already cite them. Then it prints the `change-close` command that updates the ledger.
+
+A delivered change is absorbed the same way, with `--outcome delivered --delivered-in "<PR>"`, *after* it has actually shipped — until then the spec would claim behaviour the product does not have. Then rebuild the baseline: `fdw-handoff as-built --phase <phase> --rebuild`.
+
+**Approval refuses while an in-flight change is open, and `--accept-open-blockers` does not reach it.** Accepting a blocker you can name is a decision; approving a document that contradicts the store is not.
 
 ## Rules with consequences
 
+- **A change record is raised, never assumed.** If it arrived in a document it goes through `fdw-intake` so it is anchored; if it arrived in conversation it goes through `change-add` with a source. A change nobody recorded is a change nobody can bill for.
 - **The spec is a sandbox until it is approved.** Nothing downstream reads it before then, and nothing you do here touches another feature.
 - **Never edit `signal.md` or the registry.** Signal is evidence owned by `fdw-intake`; state goes through `{state-cli}`.
 - **Never write a requirement you cannot source.** Validation enforces it, and the traceability is what protects the engagement.

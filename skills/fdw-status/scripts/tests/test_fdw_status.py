@@ -97,6 +97,11 @@ def store(tmp_path):
         (fdir / "feature.json").write_text(json.dumps(record))
         (fdir / "signal.md").write_text("# signal\n")
     (root / "phases/phase-1/features/F-001-events-agenda-layout/spec.md").write_text("# spec\n")
+    # An open change lives in the ledger; changes.md is only the rendered view of it.
+    record = json.loads((root / "phases/phase-1/features/F-002-academy/feature.json").read_text())
+    record["changes"] = [{"id": "F-002-C-01", "text": "Overlap allowed.", "status": "open",
+                          "route": "in-flight"}]
+    (root / "phases/phase-1/features/F-002-academy/feature.json").write_text(json.dumps(record))
     (root / "phases/phase-1/features/F-002-academy/changes.md").write_text("# changes\n")
     (root / "phases/phase-1/features/F-002-academy/design/ux-notes.md").write_text("# ux\n")
     (root / "phases/phase-0/phase.json").write_text(json.dumps({
@@ -166,6 +171,8 @@ def test_artifact_presence_is_detected_from_the_folder(store):
     assert board["F-001"]["has_spec"] is True
     assert board["F-002"]["has_spec"] is False
     assert board["F-002"]["has_changes"] is True
+    assert board["F-002"]["open_changes"] == 1
+    assert board["F-001"]["has_changes"] is False
     assert board["F-002"]["has_design"] is True
     assert board["F-001"]["has_design"] is False, "an empty design folder is not a design"
 

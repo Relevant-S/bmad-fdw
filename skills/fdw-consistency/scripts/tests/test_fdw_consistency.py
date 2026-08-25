@@ -311,3 +311,36 @@ def test_a_dependency_on_a_genuinely_earlier_phase_is_not_flagged(store):
     kinds_found = [f["kind"] for f in run("scan", "--root", str(store))["hard_findings"]]
     assert "backward-dependency" not in kinds_found, \
         "phase-2 depending on phase-1 is the normal shape of phased delivery"
+
+
+# ---------------------------------------------------------------- cross-phase and impact
+
+
+def test_a_scoped_scan_still_compares_against_shipped_work(store):
+    """fdw-handoff tells the BA to run this with --phase. Narrowing both sides of the comparison
+    meant the audit could never see the one contradiction that costs the most."""
+    out = run("scan", "--root", str(store), "--phase", "phase-1")
+    assert out["overlap_candidates"], "a scoped scan must still generate pairs"
+    assert any("cross_phase" in p for p in out["overlap_candidates"])
+
+
+def test_no_cross_phase_restores_the_old_behaviour(store):
+    wide = run("scan", "--root", str(store), "--phase", "phase-1")
+    narrow = run("scan", "--root", str(store), "--phase", "phase-1", "--no-cross-phase")
+    assert len(narrow["overlap_candidates"]) <= len(wide["overlap_candidates"])
+    assert all(not p["cross_phase"] for p in narrow["overlap_candidates"])
+
+
+def test_impact_ranks_candidates_and_names_the_command(store):
+    registry = json.loads((store / "registry.json").read_text())
+    title = registry["features"][0]["title"]
+    out = run("impact", "--root", str(store), "--text", title)
+    assert out["candidates"], "the feature's own title has to match it"
+    assert out["candidates"][0]["feature"] == registry["features"][0]["id"]
+    assert "route" in out["candidates"][0]
+    assert out["candidates"][0]["next"]
+
+
+def test_impact_says_when_nothing_matches(store):
+    out = run("impact", "--root", str(store), "--text", "zzzqqq wwwvvv")
+    assert out["candidates"] == []

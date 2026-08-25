@@ -89,7 +89,7 @@ as proven in the transcript). Figma MCP is wired as optional import/export, not 
 | Design output | Code prototype primary, Figma MCP optional | Proven in the transcript; component reuse is what made output quality jump. Figma stays available but off the critical path. |
 | PRD boundary | Prepare bundle → invoke `bmad-prd` Create | bmad-core owns PRD authoring and its reviewer gate; this module owns input quality. Satisfies requirement 4 with no forking. |
 | Blocker gate | Pre-flight **reports**; `bundle` **refuses** while a critical question is open, with a named override | *Reversed 2026-08-24 — see the amendment below.* The original warns-only design was never exercised, because the count it warned on was structurally always zero. |
-| Change absorption | Reopen spec + change record + downstream-impact flag | The spec exists *because* it is cheap to change. Preserve that, but never silently — the audit trail is what protects an outsourcing engagement. |
+| Change absorption | Reopen spec + change record + downstream-impact flag | *Built 2026-08-25 — see the amendment below.* The decision was right and was never implemented: the change record was prose, and the downstream-impact flags it captured were read by nothing. |
 | As-built baseline | Maintained, refreshed at each phase handoff | Answers the EasyPay "keep patching one PRD" failure and Ostap's mid-term-memory gap. Phase N+1 reads it instead of loading N old specs. |
 | Language | Any input language in, English artifacts out | Matches `document_output_language: English`. Intake owns Ukrainian/mixed/noisy-ASR normalization. `client_facing_language` exists as config for future clients. |
 | Deployment | Per client project repo, state in `{discovery_folder}` | Prototypes need the project's component library next to them; phase folders match Ostap's "phase 1.2 → folder 1.2" ask. |
@@ -434,7 +434,7 @@ because "the PRD gets polluted" as everyone changes their mind.
 | Split oversized specs | A feature that turned out to be three features becomes three specs | Draft spec | Proposed split into independent functional slices; new `F-NNN` entries on confirmation |
 | Open-questions triage | Blockers are visible and owned long before PRD time | Draft spec | Feature `questions.md`: each question tagged critical / non-critical and owned by client / internal / dev |
 | Resolve questions | The spec converges | BA answers, or answers arriving via `fdw-intake` | Questions closed with the answer and its source; spec updated |
-| Reopen with change record | Post-approval change is absorbed without silently rewriting history | New contradicting input, feature status | Status → `changed`; `changes.md` entry with what/source/why; downstream-impact flags (design invalidated? already handed to dev? → default-scope to next phase) |
+| Reopen with change record | Post-approval change is absorbed without silently rewriting history | New contradicting input, feature status | Change record with a stable id; `changed` flag; `design_invalidated` reopens the design; **already handed to dev → its own build brief, not the next phase** (*revised 2026-08-25*) |
 | Approve | The spec becomes PRD-eligible | BA approval | Status → `spec-approved`; requirement IDs minted stable at this moment; decisions line |
 
 **Design Notes:**
@@ -1203,3 +1203,82 @@ signal-to-spec coverage check that no gate performs. Separate work.
 
 1. Build each skill using **Build an Agent (BA)** or **Build a Workflow (BW)** — share this plan document as context
 2. When all skills are built, return to **Create Module (CM)** to scaffold the module infrastructure
+
+
+## Amendment — the change record becomes a first-class object (2026-08-25)
+
+The workflow was linear: intake → design → client packet → elaborate → consistency → handoff →
+phase, with one loop back. Once a spec was written there was no path to it. Two cases had no answer:
+revising a spec not yet in a PRD, and an urgent change to functionality already delivered.
+
+**The spine for both already existed and was prose.** `cmd_apply_plan` wrote a markdown block to
+`changes.md` recording, in a line nothing parsed, the exact two facts that decide both cases:
+
+```
+- downstream impact: design invalidated = {…}; already handed to dev = {…}
+- resolution: OPEN — route through fdw-elaborate.
+```
+
+Five call sites detected an open change by string-matching `"resolution: OPEN"`. `close-change`
+closed whichever record came first with no way to name one, never cleared the `changed` flag it was
+closing, and never recorded which requirements absorbed the change. `bundle` did not gate on change
+records at all, so one raised after approval travelled into the PRD. This is the same failure the
+question ledger had: **captured, but not actionable.**
+
+Requirements had stable ids. Questions were given them. The change record was the last prose-only
+object in the store, and every defect above followed from that.
+
+### What changed
+
+The change record is now a structured record with a stable id (`F-001-C-01`) in `feature.json`,
+mirrored in the registry as `open_changes`, rendered to `changes.md` as a derived view. The two
+captured facts became fields that drive the routing.
+
+**`route` is frozen at raise time** — `in-flight` or `delivered`, from the feature's status when the
+change arrived. Recomputing it on read would mean a change the BA agreed to absorb silently became
+somebody else's work the moment `feature-set --status handed-off` ran.
+
+| Route | Path |
+| --- | --- |
+| `in-flight` | `fdw-elaborate revise` reopens the spec — backward `feature-set` with a mandatory note, to `designing` when `design_invalidated`, which also re-runs design and a client packet because the client signed *those screens*. |
+| `delivered` | The spec is amended in place and the feature never moves. `fdw-handoff build-brief` writes a `/bmad-build` intent file so it ships on its own clock. |
+
+New: `change-add` / `change-close` (state CLI), `revise` / `absorb` (elaborate, replacing
+`close-change`), `build-brief` (handoff), `impact` (consistency), `as-built --rebuild`.
+
+### Decisions taken
+
+1. **A delivered change amends the original spec in place**, rather than forking a delta spec or a
+   hotfix track. `fdw-consistency` already compares `spec.md` across every phase and `as-built` is
+   generated from it, so both keep working; forking would leave two documents describing F-001 and
+   the next phase's BA reading the wrong one. `phase.json` and the phase PRD stay frozen — they are
+   the record of what was handed off, and this path never writes to them.
+2. **It reaches development through `/bmad-build`, not a PRD.** `bmad-prd` is a phase-scoping
+   instrument whose facilitated discovery is the ceremony the urgency rules out; `bmad-build`'s own
+   standard is one user-facing goal at 900–1600 tokens, and `bmad-prd`'s misroute scan already
+   points express work there. The brief is an **intent file**, deliberately without `status:`
+   frontmatter, because bmad-build routes a file that has it as a spec to resume — and emitting its
+   spec template would mean filling in a Code Map this module has no basis for.
+3. **`approve` refuses on an open in-flight change, and `--accept-open-blockers` does not reach it.**
+   An open question is a known unknown and accepting one is a decision. An open change is a known
+   *wrong* — the store records a contradiction the spec does not state. Approving that ships a
+   document you know is false.
+4. **`bundle` refuses too**, since a change raised after approval never passes the spec gate again.
+5. **Consistency compares scope × the whole store.** It loaded every feature but drew comparison
+   pairs only from within `--phase`, and `fdw-handoff/SKILL.md` tells the BA to run it with
+   `--phase` — so on the documented path a spec being written was never compared against shipped
+   work. Replayed on the real `epp` store, a `--phase phase-3` scan surfaced **eleven** comparisons
+   against delivered phase-2 work that the module had been blind to.
+
+### Deliberately not done
+
+- **`blocker_count_at_handoff` was not redefined.** It counts critical questions and earlier phases
+  recorded theirs under that definition; changing it would destroy the only cross-phase trend the
+  module has. `open_changes_at_close` sits beside it.
+- **`shipped` still has no writer.** Nothing in the module ever set it, and the delivered route
+  gates on `status in TERMINAL`, which sidesteps the missing delivery signal rather than inventing
+  one. If it is ever wanted, the single correct writer is `phase-close`.
+- **Closed phases are now inert for features but not for changes.** `apply-plan` refuses to create a
+  feature in one and `phase-move` refuses to move into one, but `change-add` is explicitly exempt —
+  raising a change against delivered work in a closed phase *is* case 2, and gating it uniformly
+  would have broken the case this exists to serve on the first day.

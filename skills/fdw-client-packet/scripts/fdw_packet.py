@@ -684,6 +684,18 @@ def cmd_sync(args: argparse.Namespace) -> None:
                 f'{cli} question-close --root {quoted_root} --question-id {meta["ref"]} '
                 f'--answer "{answer}" --source "{mapping.get("packet")}" --quote "{answer}"')
 
+    # A correction against a spec that is already approved is a change record. Until now this was
+    # reported as prose with no command, which is how the one documented loop back into a written
+    # spec stayed unimplemented.
+    spec_locked = entry["status"] in {"spec-approved", "handed-off", "shipped"}
+    if corrections and spec_locked:
+        for correction in corrections:
+            said = "; ".join(t for t in correction.get("instead", []) if t) or "see the reply"
+            commands.append(
+                f'{cli} change-add --root {quoted_root} --id {entry["id"]} '
+                f'--text "{said}" --source "{mapping.get("packet")}" '
+                f'--design-invalidated true')
+
     # An assumption nobody answered is not an assumption anybody confirmed.
     unanswered_assumptions = [
         meta.get("we_assumed") for token, meta in tokens.items()
@@ -755,6 +767,9 @@ def cmd_sync(args: argparse.Namespace) -> None:
         "blocked_by": blockers,
         "run": commands,
         "then": ("Send the disagreed assumptions back to fdw-design as corrections."
+                 if corrections and not spec_locked else
+                 f"The client disagreed with something this spec already states. That is a change "
+                 f"record, not a note — run the change-add command above, then fdw-elaborate revise."
                  if corrections else
                  f"Answers recorded. {entry['id']} stays at '{entry['status']}' — re-run "
                  f"fdw-elaborate check." if past_review else None),

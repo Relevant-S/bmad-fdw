@@ -6,6 +6,7 @@
 """Tests for fdw_elaborate.py — gathering, validation, the approval gate, and id minting."""
 
 import json
+import shlex
 import subprocess
 import sys
 from datetime import date
@@ -15,7 +16,7 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "fdw_elaborate.py"
 SECTIONS = ["Need", "Rules", "Requirements", "Out of scope", "Assumptions",
-            "Open questions", "Contradictions", "Missing information"]
+            "Open questions", "Contradictions", "Missing information", "Revision history"]
 
 
 def run(*args, expect_ok=True):
@@ -39,10 +40,13 @@ def store(tmp_path):
         "features": [{"id": "F-001", "title": "Academy", "slug": "academy", "phase": "phase-1",
                       "status": "design-approved", "flags": [], "size": None,
                       "depends_on": ["F-002"], "overlaps": ["F-002"],
-                      "open_questions": {"critical": 1, "non-critical": 1}}],
+                      "open_questions": {"critical": 1, "non-critical": 1},
+                      "open_changes": {"in-flight": 0, "delivered": 0}}],
+        "next_feature_seq": 2,
     }))
     (fdir / "feature.json").write_text(json.dumps({
-        "id": "F-001", "title": "Academy", "status": "design-approved", "summary": "Learning area.",
+        "id": "F-001", "title": "Academy", "slug": "academy", "phase": "phase-1",
+        "status": "design-approved", "summary": "Learning area.",
         "questions": [
             {"id": "F-001-Q-01", "text": "Which Events parts are reused?", "criticality": "critical",
              "owner": "client", "status": "open"},
@@ -51,6 +55,9 @@ def store(tmp_path):
             {"id": "F-001-Q-03", "text": "Certificate export?", "criticality": "critical",
              "owner": "client", "status": "resolved", "answer": "Yes, PDF."},
         ],
+    }))
+    (root / "phases" / "phase-1" / "phase.json").write_text(json.dumps({
+        "phase": "phase-1", "status": "open", "features": ["F-001"],
     }))
     (fdir / "signal.md").write_text(
         "# Academy — Signal\n\n- Academy has certification and course pages.\n"
@@ -93,6 +100,7 @@ def write_spec(store, *, requirements=None, stub_sections=(), size="M", open_que
             "- **[F-001-Q-02]** **non-critical** (internal) — Copy for the empty list?"),
         "Contradictions": "None found.",
         "Missing information": missing_information,
+        "Revision history": "_No revisions yet._",
     }
     for name in SECTIONS:
         body = "_Not written yet._" if name in stub_sections else filler[name]
@@ -108,6 +116,11 @@ def close_all_questions(store):
     for q in record["questions"]:
         q["status"] = "resolved"
     (fdir / "feature.json").write_text(json.dumps(record))
+    # The registry mirrors the count and validate fails the store on a stale one, so a helper
+    # that edits the ledger behind the CLI has to keep it honest too.
+    registry = json.loads((store / "registry.json").read_text())
+    registry["features"][0]["open_questions"] = {"critical": 0, "non-critical": 0}
+    (store / "registry.json").write_text(json.dumps(registry))
 
 
 # ---------------------------------------------------------------- gather
@@ -260,42 +273,11 @@ def test_the_override_is_available_and_records_what_it_let_through(store):
     assert text.index("F-001-Q-01 (critical") < text.index("F-001-Q-02 (non-critical")
 
 
-def test_approval_refuses_while_a_change_record_is_open(store):
-    write_spec(store)
-    close_all_questions(store)
-    (store / "phases/phase-1/features/F-001-academy/changes.md").write_text(
-        "\n## 2026-08-25 — change raised by client-call\n\n- what: sessions may overlap\n"
-        "- resolution: OPEN — route through fdw-elaborate. Intake never edits an approved spec.\n")
-    payload = run("approve", "--root", str(store), "--id", "F-001", expect_ok=False)
-    assert any("unresolved change record" in e for e in payload["errors"])
-
-
 def test_a_structurally_broken_spec_cannot_be_approved(store):
     write_spec(store, requirements=["- Courses can be archived."])
     close_all_questions(store)
     payload = run("approve", "--root", str(store), "--id", "F-001", expect_ok=False)
     assert any("no provenance" in e for e in payload["errors"])
-
-
-# ---------------------------------------------------------------- change records
-
-
-def test_close_change_records_the_resolution(store):
-    (store / "phases/phase-1/features/F-001-academy/changes.md").write_text(
-        "\n## 2026-08-25 — change raised by client-call\n\n- what: sessions may overlap\n"
-        "- resolution: OPEN — route through fdw-elaborate. Intake never edits an approved spec.\n")
-    out = run("close-change", "--root", str(store), "--id", "F-001",
-              "--resolution", "absorbed as R-04; overlapping sessions now permitted per room")
-    assert out["remaining_open"] == 0
-    text = (store / out["changes"]).read_text()
-    assert "absorbed as R-04" in text
-    assert "resolution: OPEN" not in text
-
-
-def test_close_change_with_nothing_open_says_so(store):
-    payload = run("close-change", "--root", str(store), "--id", "F-001",
-                  "--resolution", "x", expect_ok=False)
-    assert "no change record" in payload["errors"][0]
 
 
 if __name__ == "__main__":
@@ -448,3 +430,138 @@ def test_a_question_that_wraps_across_lines_is_filed_whole(store):
     spec = (store / "phases/phase-1/features/F-001-academy/spec.md").read_text()
     assert "permanently, or is per-event" in spec
     assert run("questions", "--root", str(store), "--id", "F-001")["minted"] == []
+
+
+# ---------------------------------------------------------------- change records
+
+
+def _raise_change(store, text="Course pages must also carry a Certification tab.", design="false", cid=None):
+    args = ["change-add", "--root", str(store), "--id", "F-001", "--text", text,
+            "--source", "call with the client", "--design-invalidated", design]
+    if cid:
+        args += ["--change-id", cid]
+    return state(*args)
+
+
+def _approved(store, **kw):
+    write_spec(store, **kw)
+    close_all_questions(store)
+    run("approve", "--root", str(store), "--id", "F-001")
+    for stage in ("speccing", "spec-approved"):
+        state("feature-set", "--root", str(store), "--id", "F-001", "--status", stage, "--by", "t")
+
+
+def test_approval_refuses_while_a_change_record_is_open(store):
+    _approved(store)
+    _raise_change(store)
+    payload = run("approve", "--root", str(store), "--id", "F-001", expect_ok=False)
+    assert any("open change record" in e for e in payload["errors"])
+
+
+def test_the_override_does_not_bypass_an_open_change(store):
+    """--accept-open-blockers accepts a blocker you can name. An open change is a contradiction
+    the spec does not say yet — a known wrong, not a known unknown."""
+    _approved(store)
+    _raise_change(store)
+    payload = run("approve", "--root", str(store), "--id", "F-001",
+                  "--accept-open-blockers", expect_ok=False)
+    assert any("open change record" in e for e in payload["errors"])
+
+
+def test_revise_on_a_non_visual_change_reopens_to_speccing(store):
+    _approved(store)
+    _raise_change(store, design="false")
+    out = run("revise", "--root", str(store), "--id", "F-001")
+    assert out["reopen_to"] == "speccing"
+    assert out["design_invalidated"] is False
+    assert "--status speccing" in out["run"][0]
+    assert "--note" in out["run"][0], "rework has to be visible in decisions.md"
+    assert len(out["run"]) == 1, "a non-visual change must not drag design back in"
+
+
+def test_revise_on_a_visual_change_reopens_to_designing_and_routes_the_client(store):
+    _approved(store)
+    _raise_change(store, design="true")
+    out = run("revise", "--root", str(store), "--id", "F-001")
+    assert out["reopen_to"] == "designing"
+    assert "--status designing" in out["run"][0]
+    assert any("fdw_design.py" in c for c in out["run"])
+    assert any("fdw_packet.py" in c for c in out["run"]), "the client signed those screens"
+
+
+def test_revise_refuses_on_a_delivered_change_and_names_the_build_brief(store):
+    _approved(store)
+    state("feature-set", "--root", str(store), "--id", "F-001", "--status", "handed-off", "--by", "t")
+    _raise_change(store, text="Urgent fix to shipped behaviour.")
+    payload = run("revise", "--root", str(store), "--id", "F-001", expect_ok=False)
+    assert "build-brief" in payload["errors"][0]
+    assert payload["delivered"] == ["F-001-C-01"]
+
+
+def test_revise_ranks_the_requirements_a_change_probably_touches(store):
+    _approved(store)
+    _raise_change(store, text="Course pages must carry a fourth tab for attendance.")
+    out = run("revise", "--root", str(store), "--id", "F-001")
+    assert out["changes"][0]["likely_requirements"], "the BA should not have to hunt"
+
+
+def test_absorb_refuses_a_requirement_id_that_is_not_in_the_spec(store):
+    _approved(store)
+    _raise_change(store)
+    payload = run("absorb", "--root", str(store), "--id", "F-001", "--change-id", "F-001-C-01",
+                  "--resolution", "done", "--absorbed-by", "F-001-R-99", expect_ok=False)
+    assert "not a requirement" in payload["errors"][0]
+
+
+def test_absorb_refuses_when_the_requirements_section_never_changed(store):
+    _approved(store)
+    _raise_change(store)
+    payload = run("absorb", "--root", str(store), "--id", "F-001", "--change-id", "F-001-C-01",
+                  "--resolution", "nothing actually changed", expect_ok=False)
+    assert any("byte-identical" in e or "name the requirements" in e for e in payload["errors"])
+
+
+def test_absorb_stamps_the_marker_and_renumbers_nothing(store):
+    _approved(store)
+    _raise_change(store)
+    spec = store / "phases/phase-1/features/F-001-academy/spec.md"
+    spec.write_text(spec.read_text().replace(
+        "Course pages carry Overview, Sessions and Certification tabs.",
+        "Course pages carry Overview, Sessions, Certification and Attendance tabs."), encoding="utf-8")
+    out = run("absorb", "--root", str(store), "--id", "F-001", "--change-id", "F-001-C-01",
+              "--resolution", "administrators only", "--absorbed-by", "F-001-R-02")
+    text = spec.read_text()
+    assert "**[F-001-R-02]**" in text, "the id never moves"
+    assert "_(amended" in text
+    assert "F-001-C-01" in text.split("## Revision history")[1]
+    assert "change-close" in out["run"][0]
+
+
+def test_absorb_supersedes_keeps_the_id_and_its_position(store):
+    _approved(store)
+    _raise_change(store)
+    spec = store / "phases/phase-1/features/F-001-academy/spec.md"
+    before = [l for l in spec.read_text().splitlines() if "**[F-001-R-" in l]
+    spec.write_text(spec.read_text().replace("Course pages carry Overview, Sessions and Certification tabs.", "Course pages carry one tab."),
+                    encoding="utf-8")
+    run("absorb", "--root", str(store), "--id", "F-001", "--change-id", "F-001-C-01",
+        "--resolution", "withdrawn", "--supersedes", "F-001-R-02")
+    after = [l for l in spec.read_text().splitlines() if "**[F-001-R-" in l]
+    assert len(after) == len(before), "a superseded requirement is struck, never deleted"
+    assert any("_(superseded" in a for a in after)
+
+
+def test_the_round_trip_restores_approval(store):
+    _approved(store)
+    _raise_change(store)
+    run("revise", "--root", str(store), "--id", "F-001")
+    state("feature-set", "--root", str(store), "--id", "F-001", "--status", "speccing", "--by", "t")
+    spec = store / "phases/phase-1/features/F-001-academy/spec.md"
+    spec.write_text(spec.read_text().replace(
+        "Course pages carry Overview, Sessions and Certification tabs.",
+        "Course pages carry Overview, Sessions, Certification and Attendance tabs."), encoding="utf-8")
+    out = run("absorb", "--root", str(store), "--id", "F-001", "--change-id", "F-001-C-01",
+              "--resolution", "attendance tab added", "--absorbed-by", "F-001-R-02")
+    state(*shlex.split(out["run"][0])[3:])
+    run("approve", "--root", str(store), "--id", "F-001")
+    assert state("validate", "--root", str(store))["healthy"] is True

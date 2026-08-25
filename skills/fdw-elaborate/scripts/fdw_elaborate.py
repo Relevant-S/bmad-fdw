@@ -14,6 +14,7 @@ it collects, checks, and numbers.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -31,8 +32,17 @@ SPEC_LOCKED = {"spec-approved", "handed-off", "shipped"}
 SECTIONS = [
     "Need", "Rules", "Requirements", "Out of scope",
     "Assumptions", "Open questions", "Contradictions", "Missing information",
+    "Revision history",
 ]
 STUB = "_Not written yet._"
+# A fresh spec has no revisions, and that is a real answer rather than an unwritten one — so the
+# default body is deliberately not STUB and `check` passes on a scaffold without special-casing.
+NO_REVISIONS = "_No revisions yet._"
+
+# Markers stamped onto a requirement when a change lands. The id never moves: as-built.md and the
+# phase PRD already cite it, so the line is annotated in place and never renumbered or deleted.
+AMENDED = re.compile(r"\s*_\(amended\s+\d{4}-\d{2}-\d{2}[^)]*\)_\s*$")
+SUPERSEDED = re.compile(r"\s*_\(superseded\s+\d{4}-\d{2}-\d{2}[^)]*\)_\s*$")
 
 REQ_LINE = re.compile(r"^\s*-\s+(?:\*\*\[(?P<id>[A-Z0-9-]+-R-\d+)\]\*\*\s+)?(?P<body>.+?)\s*$")
 PROV = re.compile(r"\[(?:src|from):\s*[^\]]+\]")
@@ -225,6 +235,63 @@ def state_cli() -> str:
         "uv run {skill-root}/../fdw-intake/scripts/fdw_state.py"
 
 
+def sibling_cli(skill: str, script: str) -> str:
+    sibling = Path(__file__).resolve().parents[2] / skill / "scripts" / script
+    return f"uv run {sibling}" if sibling.exists() else f"uv run {{skill-root}}/../{skill}/scripts/{script}"
+
+
+def design_cli() -> str:
+    return sibling_cli("fdw-design", "fdw_design.py")
+
+
+def packet_cli() -> str:
+    return sibling_cli("fdw-client-packet", "fdw_packet.py")
+
+
+def handoff_cli() -> str:
+    return sibling_cli("fdw-handoff", "fdw_handoff.py")
+
+
+_TERM_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+_STOP = {"the", "and", "for", "with", "that", "this", "from", "are", "not", "can", "has", "its",
+         "into", "when", "which", "each", "per", "any", "all", "one", "two", "但", "має", "може"}
+
+
+def _terms(text: str) -> set[str]:
+    """Significant words, Unicode-aware. The English stopword list is a courtesy, not a filter —
+    this module's own sources are routinely Ukrainian, and \\w+ with an ASCII class scores them
+    at zero."""
+    return {w.casefold() for w in _TERM_RE.findall(str(text))} - _STOP
+
+
+def _requirements_digest(text: str) -> str:
+    body = re.split(r"^##\s+", text, flags=re.M)
+    for chunk in body:
+        if chunk.lower().startswith("requirements"):
+            return hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+    return hashlib.sha256(b"").hexdigest()
+
+
+def _append_revision(text: str, line: str) -> str:
+    """Append one line to ## Revision history, creating the section if an older spec lacks it.
+
+    Creating it matters: every spec written before this section existed would otherwise fail
+    `check` forever with no command that fixes it."""
+    lines = text.splitlines()
+    for i, raw in enumerate(lines):
+        if re.match(r"^##\s+Revision history\s*$", raw):
+            end = len(lines)
+            for j in range(i + 1, len(lines)):
+                if re.match(r"^##\s+", lines[j]):
+                    end = j
+                    break
+            block = lines[i + 1:end]
+            kept = [b for b in block if b.strip() and b.strip() != NO_REVISIONS]
+            kept.append(line)
+            return "\n".join(lines[:i + 1] + [""] + kept + [""] + lines[end:]).rstrip() + "\n"
+    return text.rstrip() + f"\n\n## Revision history\n\n{line}\n"
+
+
 def walk_to(root: Path, entry: dict[str, Any], target: str, by: str, note: str = "",
             final_extra: str = "") -> list[str]:
     """feature-set refuses a forward move that skips a gate, so emit every step rather than a
@@ -276,12 +343,9 @@ def cmd_gather(args: argparse.Namespace) -> None:
     signal = (fdir / "signal.md").read_text(encoding="utf-8") if (fdir / "signal.md").exists() else ""
     anchors = re.findall(r"anchor:\s*`([^`]+)`", signal)
 
-    changes_text = (fdir / "changes.md").read_text(encoding="utf-8") if (fdir / "changes.md").exists() else ""
-    open_changes = [
-        block.strip().splitlines()[0]
-        for block in changes_text.split("\n## ")[1:]
-        if "resolution: OPEN" in block
-    ]
+    open_changes = [c for c in record.get("changes", []) if c.get("status", "open") == "open"]
+    # What shipped outside this spec. A BA writing it needs to know, and until now nothing said so.
+    delivered_changes = [c for c in record.get("changes", []) if c.get("route") == "delivered"]
 
     emit(
         {
@@ -303,6 +367,7 @@ def cmd_gather(args: argparse.Namespace) -> None:
             "open_questions": [q for q in record.get("questions", []) if q.get("status", "open") == "open"],
             "resolved_questions": [q for q in record.get("questions", []) if q.get("status") == "resolved"],
             "open_changes": open_changes,
+            "delivered_changes": delivered_changes,
             "spec_exists": (fdir / "spec.md").exists(),
             "spec_path": str((fdir / "spec.md").relative_to(root)),
         }
@@ -384,6 +449,16 @@ TEMPLATE = """# {title} — Spec
        - **non-critical** (client) — the real seven-row rules table for the new categories -->
 
 {stub}
+
+## Revision history
+
+<!-- Written by `approve` and `absorb`. Do not hand-edit.
+     Requirement ids never change. An amended requirement keeps its id and gains
+     `_(amended YYYY-MM-DD · F-001-C-01)_`; a withdrawn one keeps its id AND its position and
+     gains `_(superseded YYYY-MM-DD · F-001-C-02)_`. Nothing is deleted — as-built.md and the
+     phase PRD already cite these ids. -->
+
+{no_revisions}
 """
 
 
@@ -399,6 +474,7 @@ def cmd_scaffold(args: argparse.Namespace) -> None:
         TEMPLATE.format(
             title=entry["title"], id=entry["id"], phase=entry["phase"],
             depends=", ".join(entry.get("depends_on", [])) or "—", stub=STUB,
+            no_revisions=NO_REVISIONS,
         ),
         encoding="utf-8",
     )
@@ -454,13 +530,26 @@ def inspect(root: Path, feature_id: str) -> dict[str, Any]:
     critical = [q for q in open_q if q.get("criticality") == "critical"]
     questions_state["open_ledger"] = open_q
 
-    changes = (fdir / "changes.md").read_text(encoding="utf-8") if (fdir / "changes.md").exists() else ""
-    open_changes = [b.strip().splitlines()[0] for b in changes.split("\n## ")[1:] if "resolution: OPEN" in b]
+    open_changes = [c for c in record.get("changes", []) if c.get("status", "open") == "open"]
+    in_flight = [c for c in open_changes if c.get("route") != "delivered"]
+    delivered = [c for c in open_changes if c.get("route") == "delivered"]
+
+    # An open in-flight change is a known WRONG, not a known unknown: the store records a
+    # contradiction the spec does not say yet. That is why it lands in problems, where
+    # --accept-open-blockers cannot reach it — accepting a blocker you can name is a decision;
+    # approving a document you know is incorrect is not.
+    if in_flight:
+        listed = "; ".join(f"{c['id']} {c.get('text', '')[:60]}" for c in in_flight)
+        problems.append(
+            f"{entry['id']}: {len(in_flight)} open change record(s) — {listed}. The spec does not "
+            f"say this yet. Run fdw-elaborate revise, absorb it, then approve.")
 
     return {
         "feature": entry["id"], "entry": entry, "fdir": fdir, "spec": spec, "text": text,
+        "record": record,
         "requirements": requirements, "size": size, "problems": problems,
         "open_questions": open_q, "critical_open": critical, "open_changes": open_changes,
+        "open_in_flight": in_flight, "open_delivered": delivered,
         "questions_state": questions_state,
     }
 
@@ -594,12 +683,6 @@ def cmd_approve(args: argparse.Namespace) -> None:
     entry, text = state["entry"], state["text"]
     problems = list(state["problems"])
 
-    if state["open_changes"] and not args.accept_open_blockers:
-        problems.append(
-            f"{entry['id']}: {len(state['open_changes'])} unresolved change record(s) in changes.md. "
-            f"Absorb the change into the spec and close the record before approving."
-        )
-
     if state["open_questions"] and not args.accept_open_blockers:
         listed = "; ".join(
             f"{q['id']} ({q.get('criticality', '?')} · {q.get('owner', '?')}) {q.get('text', '')[:60]}"
@@ -669,25 +752,193 @@ def cmd_approve(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------- change records
 
 
-def cmd_close_change(args: argparse.Namespace) -> None:
+def _change_target(state: dict[str, Any], change_id: str | None) -> list[dict[str, Any]]:
+    changes = state["open_in_flight"]
+    if change_id:
+        picked = [c for c in changes if c.get("id") == change_id]
+        if not picked:
+            die([f"{state['feature']}: no open in-flight change '{change_id}'. Open: "
+                 f"{[c['id'] for c in changes]}"])
+        return picked
+    return changes
+
+
+def cmd_revise(args: argparse.Namespace) -> None:
+    """Reopen an approved spec so a change can be absorbed into it.
+
+    The fork between the two ways back into a written spec is made here, from the route frozen on
+    the record — not left to the BA to work out. An in-flight change reopens the spec; a delivered
+    one never does, because the feature's status is a fact about delivery."""
     root = Path(args.root).resolve()
-    fdir, entry, _ = locate(root, args.id)
-    changes = fdir / "changes.md"
-    if not changes.exists():
-        die([f"{entry['id']}: no changes.md — there is no change record to close."])
-    text = changes.read_text(encoding="utf-8")
-    if "resolution: OPEN" not in text:
-        die([f"{entry['id']}: every change record is already closed."])
+    state = inspect(root, args.id)
+    entry = state["entry"]
+    record = state["record"]
+    open_changes = [c for c in record.get("changes", []) if c.get("status", "open") == "open"]
+    in_flight = [c for c in open_changes if c.get("route") != "delivered"]
+    delivered = [c for c in open_changes if c.get("route") == "delivered"]
+
+    if not open_changes:
+        die([f"{entry['id']}: no open change records. Nothing to revise."], feature=entry["id"])
+    if not in_flight:
+        die([f"{entry['id']}: every open change is against delivered work "
+             f"({', '.join(c['id'] for c in delivered)}). Revising the spec would not ship it — "
+             f"run fdw-handoff build-brief instead."],
+            feature=entry["id"], delivered=[c["id"] for c in delivered],
+            next=f"{handoff_cli()} build-brief --root {root} --id {entry['id']} "
+                 f"--change-id {delivered[0]['id']}")
+
+    targets = _change_target(state, args.change_id)
+    visual = [c for c in targets if str(c.get("design_invalidated")) == "true"]
+    target_status = "designing" if visual else "speccing"
+
+    # Which requirements each change probably touches: ranked candidates, never a decision.
+    requirements = requirement_lines(state["text"])
+    for change in targets:
+        wanted = _terms(change.get("text", ""))
+        scored = []
+        for _line, body, rid in requirements:
+            shared = wanted & _terms(body)
+            if len(shared) >= 2:
+                scored.append({"id": rid, "text": body[:120], "shared": len(shared),
+                               "shared_terms": sorted(shared)[:8]})
+        scored.sort(key=lambda r: -r["shared"])
+        change["likely_requirements"] = scored[:6]
+
+    reason = (f"reopened for {', '.join(c['id'] for c in targets)}"
+              + (" — design invalidated" if visual else ""))
+    commands = [
+        f'{state_cli()} feature-set --root {root} --id {entry["id"]} --status {target_status} '
+        f'--by fdw-elaborate --note "{reason}"'
+    ]
+    if visual:
+        commands += [
+            f"{design_cli()} scaffold --root {root} --id {entry['id']}",
+            f"{packet_cli()} gather --root {root} --id {entry['id']}",
+        ]
+
+    # A bundle already naming this spec is about to be built from a superseded document.
+    warnings = []
+    manifest = root / "phases" / entry["phase"] / "handoff" / "bundle.json"
+    if manifest.exists():
+        try:
+            bundled = json.loads(manifest.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            bundled = {}
+        if any(f.get("id") == entry["id"] for f in bundled.get("features", [])):
+            warnings.append(
+                f"{entry['id']} is in the {entry['phase']} bundle assembled "
+                f"{bundled.get('assembled', '?')}. Re-run fdw-handoff bundle after absorbing, or "
+                f"the PRD gets built from the spec you are about to supersede.")
+
+    emit({
+        "feature": entry["id"], "status": entry["status"], "reopen_to": target_status,
+        "design_invalidated": bool(visual),
+        "changes": [{k: c.get(k) for k in
+                     ("id", "text", "anchor", "quote", "route", "design_invalidated",
+                      "status_when_raised", "likely_requirements")} for c in targets],
+        "deferred_to_build_brief": [c["id"] for c in delivered],
+        "run": commands,
+        "warnings": warnings,
+        "then": (
+            "Absorb the change into the spec, then run: fdw_elaborate.py absorb "
+            f"--root {root} --id {entry['id']} --change-id <id> --resolution \"…\" "
+            "--absorbed-by <requirement id>"),
+    })
+
+
+def cmd_absorb(args: argparse.Namespace) -> None:
+    """Record that the spec now says what the change asked for, and emit the ledger command.
+
+    The check that matters is the digest: a change is absorbed when the Requirements section says
+    something different from when it was raised. Without that, closing a record is clerical."""
+    root = Path(args.root).resolve()
+    state = inspect(root, args.id)
+    entry, text, record = state["entry"], state["text"], state["record"]
+    change = next((c for c in record.get("changes", [])
+                   if c.get("id") == args.change_id), None)
+    if change is None:
+        die([f"{entry['id']}: no change '{args.change_id}'."])
+    if change.get("status", "open") != "open":
+        die([f"{args.change_id} is already '{change['status']}'."])
+    # A delivered change is absorbed too — the spec is the feature's living description and one
+    # document per feature is what keeps consistency and as-built working. What differs is when:
+    # in-flight absorbs before it ships, delivered absorbs after, recording what actually shipped.
+    delivered = change.get("route") == "delivered"
+    if delivered and args.outcome != "delivered":
+        die([f"{args.change_id} is against delivered work. Absorb it with --outcome delivered "
+             f"--delivered-in \"<PR or build>\" once it has actually shipped; until then the spec "
+             f"would claim behaviour the product does not have."])
+    if delivered and not args.delivered_in:
+        die([f"{args.change_id}: --delivered-in is required — as-built is only trustworthy if it "
+             f"can point at what shipped."])
+    if not delivered and args.outcome == "delivered":
+        die([f"{args.change_id} is in-flight; it ships with its phase, not on its own."])
+
+    known = {rid: body for _line, body, rid in requirement_lines(text) if rid}
+    problems = []
+    for rid in list(args.absorbed_by) + list(args.supersedes):
+        if rid not in known:
+            problems.append(f"{rid} is not a requirement in {entry['id']}'s spec. Present: "
+                            f"{sorted(known)[:8]}…")
+    if args.outcome != "dropped":
+        digest = _requirements_digest(text)
+        if digest == change.get("requirements_digest") and not (args.absorbed_by or args.supersedes):
+            problems.append(
+                f"{entry['id']}: the Requirements section is byte-identical to when "
+                f"{args.change_id} was raised. Absorbing a change means the spec now says "
+                f"something different — edit it first, or close the record with --outcome dropped.")
+        if not args.absorbed_by and not args.supersedes:
+            problems.append(
+                f"{args.change_id}: name the requirements that carry it with --absorbed-by, or "
+                f"the ones it withdraws with --supersedes.")
+    if problems:
+        die(problems, feature=entry["id"])
+
     stamp = date.today().isoformat()
-    updated = text.replace(
-        "- resolution: OPEN — route through fdw-elaborate. Intake never edits an approved spec.",
-        f"- resolution: {stamp} — {args.resolution}",
-        1,
-    )
-    changes.write_text(updated, encoding="utf-8")
-    remaining = updated.count("resolution: OPEN")
-    emit({"feature": entry["id"], "closed": 1, "remaining_open": remaining,
-          "changes": str(changes.relative_to(root))})
+    lines = text.splitlines()
+    for i, raw in enumerate(lines):
+        match = REQ_LINE.match(raw)
+        if not match or not match.group("id"):
+            continue
+        rid = match.group("id")
+        if rid in args.absorbed_by:
+            body = AMENDED.sub("", SUPERSEDED.sub("", raw.rstrip()))
+            lines[i] = f"{body} _(amended {stamp} · {args.change_id})_"
+        elif rid in args.supersedes:
+            body = AMENDED.sub("", SUPERSEDED.sub("", raw.rstrip()))
+            lines[i] = f"{body} _(superseded {stamp} · {args.change_id})_"
+    updated = "\n".join(lines)
+
+    touched = []
+    if args.absorbed_by:
+        touched.append("amended " + ", ".join(f"`{r}`" for r in args.absorbed_by))
+    if args.supersedes:
+        touched.append("superseded " + ", ".join(f"`{r}`" for r in args.supersedes))
+    source = f" [src: {change['anchor']}]" if change.get("anchor") else ""
+    entry_line = (f"- {stamp} — change `{args.change_id}` {args.outcome} · "
+                  f"{' · '.join(touched) or 'no requirement changed'} — "
+                  f"{args.resolution}{source}")
+    updated = _append_revision(updated, entry_line)
+    state["spec"].write_text(updated, encoding="utf-8")
+
+    command = (f'{state_cli()} change-close --root {root} --change-id {args.change_id} '
+               f'--resolution "{args.resolution}" --outcome {args.outcome}')
+    for rid in args.absorbed_by:
+        command += f" --absorbed-by {rid}"
+    if args.delivered_in:
+        command += f' --delivered-in \"{args.delivered_in}\"'
+
+    emit({"feature": entry["id"], "change": args.change_id, "outcome": args.outcome,
+          "amended": list(args.absorbed_by), "superseded": list(args.supersedes),
+          "revision_line": entry_line,
+          "spec": str(state["spec"].relative_to(root)),
+          "run": [command],
+          "then": (
+              f"Then run: {handoff_cli()} as-built --root {root} --phase {entry['phase']} --rebuild "
+              f"— {entry['id']} stays '{entry['status']}' and the baseline is what later phases "
+              f"are specced against."
+              if delivered else
+              f"Then re-run check and approve. {entry['id']} has to pass its gates again.")})
 
 
 # ---------------------------------------------------------------- cli
@@ -726,11 +977,26 @@ def main(argv: list[str] | None = None) -> None:
                    help="approve with critical questions still open; recorded in the spec and the log")
     p.set_defaults(func=cmd_approve)
 
-    p = sub.add_parser("close-change", help="record how a change raised against an approved spec was absorbed")
+    p = sub.add_parser("revise", help="reopen an approved spec to absorb an open change record")
     p.add_argument("--root", required=True)
     p.add_argument("--id", required=True)
+    p.add_argument("--change-id", dest="change_id", default=None,
+                   help="one change; omit to reopen for every open in-flight change")
+    p.set_defaults(func=cmd_revise)
+
+    p = sub.add_parser("absorb", help="record that the spec now carries a change, and close it")
+    p.add_argument("--root", required=True)
+    p.add_argument("--id", required=True)
+    p.add_argument("--change-id", dest="change_id", required=True)
     p.add_argument("--resolution", required=True)
-    p.set_defaults(func=cmd_close_change)
+    p.add_argument("--absorbed-by", dest="absorbed_by", action="append", default=[],
+                   help="requirement id that now carries the change; repeatable")
+    p.add_argument("--supersedes", action="append", default=[],
+                   help="requirement id this change withdraws; kept in place and struck")
+    p.add_argument("--outcome", default="absorbed", choices=["absorbed", "dropped", "delivered"])
+    p.add_argument("--delivered-in", dest="delivered_in", default=None,
+                   help="the PR or build that shipped it; required for a delivered change")
+    p.set_defaults(func=cmd_absorb)
 
     args = parser.parse_args(argv)
     args.func(args)

@@ -26,6 +26,16 @@ LIFECYCLE = [
     "candidate", "sliced", "designing", "client-review", "design-approved",
     "speccing", "spec-approved", "handed-off", "shipped",
 ]
+TERMINAL = {"handed-off", "shipped"}
+SPEC_LOCKED = {"spec-approved", "handed-off", "shipped"}
+
+
+def state_cli() -> str:
+    sibling = Path(__file__).resolve().parents[2] / "fdw-intake" / "scripts" / "fdw_state.py"
+    return f"uv run {sibling}" if sibling.exists() else \
+        "uv run {skill-root}/../fdw-intake/scripts/fdw_state.py"
+
+
 STOPWORDS = {
     "a", "an", "and", "any", "are", "as", "at", "be", "been", "before", "but", "by", "can",
     "cannot", "course", "do", "does", "each", "every", "for", "from", "has", "have", "how",
@@ -246,10 +256,23 @@ def hard_findings(root: Path, data: dict[str, Any]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------- candidates for judgment
 
 
-def overlap_candidates(scope: list[dict[str, Any]], floor: float, cap: int) -> tuple[list[dict[str, Any]], int]:
+def overlap_candidates(scope: list[dict[str, Any]], universe: list[dict[str, Any]],
+                       floor: float, cap: int) -> tuple[list[dict[str, Any]], int]:
+    """Pairs are drawn scope x universe, not scope x scope.
+
+    Narrowing both sides to one phase meant a new feature was never compared against what already
+    shipped — and fdw-handoff tells the BA to run this with --phase, so on the documented path the
+    cross-phase audit never happened at all. Findings are still raised only about the scope."""
     pairs = []
-    for i, a in enumerate(scope):
-        for b in scope[i + 1:]:
+    seen: set[frozenset[str]] = set()
+    for a in scope:
+        for b in universe:
+            if a["id"] == b["id"]:
+                continue
+            key = frozenset((a["id"], b["id"]))
+            if key in seen:
+                continue
+            seen.add(key)
             if not a["terms"] or not b["terms"]:
                 continue
             shared = a["terms"] & b["terms"]
@@ -269,22 +292,34 @@ def overlap_candidates(scope: list[dict[str, Any]], floor: float, cap: int) -> t
                     "shared_terms": sorted(shared)[:14],
                     "already_linked": linked,
                     "same_phase": a["phase"] == b["phase"],
+                    "cross_phase": a["phase"] != b["phase"],
+                    # The highest-value finding this audit can produce: a spec being written now
+                    # that repeats something already delivered.
+                    "against_shipped": b["status"] in TERMINAL or a["status"] in TERMINAL,
                 })
     pairs.sort(key=lambda p: -p["similarity"])
     return pairs[:cap], max(0, len(pairs) - cap)
 
 
-def requirement_candidates(scope: list[dict[str, Any]], cap: int) -> tuple[list[dict[str, Any]], int]:
+def requirement_candidates(scope: list[dict[str, Any]], universe: list[dict[str, Any]],
+                           cap: int) -> tuple[list[dict[str, Any]], int]:
     """Cross-feature requirement pairs sharing enough significant terms to be worth a read."""
-    flat = [
-        {"feature": f["id"], "id": r["id"] or "(unnumbered)", "text": r["text"], "terms": terms(r["text"])}
-        for f in scope for r in f["requirements"]
-    ]
+    def flatten(features):
+        return [{"feature": f["id"], "id": r["id"] or "(unnumbered)", "text": r["text"],
+                 "terms": terms(r["text"]), "status": f["status"]}
+                for f in features for r in f["requirements"]]
+
+    flat, other = flatten(scope), flatten(universe)
     pairs = []
-    for i, a in enumerate(flat):
-        for b in flat[i + 1:]:
+    seen: set[tuple[str, str]] = set()
+    for a in flat:
+        for b in other:
             if a["feature"] == b["feature"]:
                 continue
+            key = tuple(sorted((f"{a['feature']}/{a['id']}", f"{b['feature']}/{b['id']}")))
+            if key in seen:
+                continue
+            seen.add(key)
             shared = a["terms"] & b["terms"]
             if len(shared) >= 3:
                 pairs.append({
@@ -292,6 +327,7 @@ def requirement_candidates(scope: list[dict[str, Any]], cap: int) -> tuple[list[
                     "b": {"feature": b["feature"], "id": b["id"], "text": b["text"]},
                     "shared_terms": sorted(shared)[:10],
                     "weight": len(shared),
+                    "against_shipped": b["status"] in TERMINAL,
                 })
     pairs.sort(key=lambda p: -p["weight"])
     return pairs[:cap], max(0, len(pairs) - cap)
@@ -301,8 +337,11 @@ def cmd_scan(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
     data = load(root, args.phase, args.id)
     scope = data["scope"]
-    overlaps, overlaps_dropped = overlap_candidates(scope, args.similarity, args.max_pairs)
-    reqs, reqs_dropped = requirement_candidates(scope, args.max_pairs)
+    # Everything, unless the BA explicitly narrows it. A phase-scoped audit that never looks at
+    # the phase before it cannot see the one contradiction that costs the most.
+    universe = scope if args.no_cross_phase else data["features"]
+    overlaps, overlaps_dropped = overlap_candidates(scope, universe, args.similarity, args.max_pairs)
+    reqs, reqs_dropped = requirement_candidates(scope, universe, args.max_pairs)
 
     open_q = [
         {**q, "feature_id": f["id"], "feature_title": f["title"]}
@@ -330,6 +369,56 @@ def cmd_scan(args: argparse.Namespace) -> None:
             f"not listed. Raise --max-pairs to see them."
             if overlaps_dropped or reqs_dropped else "All candidate pairs are listed."
         ),
+    })
+
+
+def cmd_impact(args: argparse.Namespace) -> None:
+    """Which existing features a new client request touches, ranked.
+
+    Store-wide deliberately: a request about something delivered two phases ago has to find it.
+    The scoring is the same overlap coefficient the audit already uses — one metric, not two —
+    and the route on each hit is what tells the BA which of the two change paths they are on."""
+    root = Path(args.root).resolve()
+    data = load(root, None, None)
+    wanted = terms(args.text)
+    if not wanted:
+        die(["Nothing to match on — the request has no terms longer than two characters."])
+
+    rows = []
+    for feature in data["features"]:
+        pool = feature["terms"] | feature["signal_terms"]
+        shared = wanted & pool
+        smaller = min(len(wanted), len(pool)) or 1
+        score = len(shared) / smaller
+        alias_hit = bool({a.lower() for a in feature["aliases"]} & wanted)
+        if not shared and not alias_hit:
+            continue
+        matching = [
+            {"id": r["id"] or "(unnumbered)", "text": r["text"][:140]}
+            for r in feature["requirements"] if len(wanted & terms(r["text"])) >= 3
+        ][:4]
+        delivered = feature["status"] in TERMINAL
+        rows.append({
+            "feature": feature["id"], "title": feature["title"], "phase": feature["phase"],
+            "status": feature["status"], "route": "delivered" if delivered else "in-flight",
+            "spec_locked": feature["status"] in SPEC_LOCKED,
+            "similarity": round(score, 3), "alias_hit": alias_hit,
+            "shared_terms": sorted(shared)[:12],
+            "matching_requirements": matching,
+            "next": (
+                f"{state_cli()} change-add --root {root} --id {feature['id']} "
+                f'--source "<where this came from>" --text "<the change>"'
+                if feature["status"] in SPEC_LOCKED else
+                f"This one is still a draft — edit it directly, or raise a question with "
+                f"{state_cli()} question-add."),
+        })
+    rows.sort(key=lambda r: (-int(r["alias_hit"]), -r["similarity"]))
+    emit({
+        "request": args.text,
+        "candidates": rows[:args.top],
+        "considered": len(data["features"]),
+        "note": "Ranked candidates, not a decision — read them and pick. A request can touch more "
+                "than one feature, and one of them being delivered changes how it is handled.",
     })
 
 
@@ -497,7 +586,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--id", default=None, help="limit to one feature")
     p.add_argument("--similarity", type=float, default=0.18, help="overlap candidate floor")
     p.add_argument("--max-pairs", type=int, default=40, dest="max_pairs")
+    p.add_argument("--no-cross-phase", dest="no_cross_phase", action="store_true",
+                   help="compare only within the scope, as this command used to")
     p.set_defaults(func=cmd_scan)
+
+    p = sub.add_parser("impact", help="which features a new request touches, ranked")
+    p.add_argument("--root", required=True)
+    p.add_argument("--text", required=True, help="the request, in the client's words")
+    p.add_argument("--top", type=int, default=8)
+    p.set_defaults(func=cmd_impact)
 
     p = sub.add_parser("rollup", help="regenerate the derived top-level questions.md")
     p.add_argument("--root", required=True)

@@ -66,12 +66,32 @@ In this order, because each step reads what the previous one wrote:
 
 ```
 {state-cli} feature-set --root {discovery_folder} --id <F-NNN> --status handed-off --by fdw-handoff --note "bundled into <phase> PRD"
-{handoff-cli} as-built --root {discovery_folder} --phase <phase>
 {state-cli} phase-close --root {discovery_folder} --phase <phase> --prd-path <prd path>
+{handoff-cli} as-built --root {discovery_folder} --phase <phase>
 {state-cli} phase-open  --root {discovery_folder} --phase <next> --from <phase> --exit-criterion "…"
 ```
 
+`as-built` runs **after** `phase-close`, not before: the PRD path it cites is written by `phase-close`, so running it first left every baseline with no reference to the document it describes.
+
 `as-built` appends what shipped, with requirement ids, to the rolling baseline — that is what the next phase gets specced against instead of a pile of old specs. `phase-close` refuses while features are neither handed off nor explicitly deferred or dropped; deferring is `fdw-phase`'s job, so route there rather than forcing.
+
+Re-run it with `--rebuild` whenever a change lands on delivered work; it regenerates that phase's section from the current specs, keeping the original ship date and marking each amended requirement with the change that moved it.
+
+## An urgent change to something already delivered
+
+A feature shipped, the client needs it changed, and it cannot wait for the phase you are speccing now. That is not a new feature and not a spec revision:
+
+```
+{handoff-cli} build-brief --root {discovery_folder} --change-id <F-NNN-C-NN>
+```
+
+It writes a self-contained intent file and the BA runs `/bmad-build` against it. **Not a PRD** — `bmad-prd` is a phase-scoping instrument and its facilitated discovery is the ceremony the urgency rules out; `bmad-build` is built for exactly one user-facing goal and its own router points express work here.
+
+The brief carries only the delivered requirements the change actually touches, and says how many it left out and where the rest are — a full baseline dump for a large feature spends the build agent's whole context before the change is described. It also carries the real files the prototype was cloned from, which is the most useful thing this module knows about a codebase it does not own.
+
+Do **not** write the bmad-build spec yourself, for the same reason you do not write the PRD: that step exists to investigate the code, and this module has no basis for it.
+
+When it ships, `fdw-elaborate absorb --outcome delivered --delivered-in "<PR>"` amends the spec, then `as-built --rebuild` makes the baseline true again. The feature never leaves `handed-off`.
 
 Then hand the BA `next-call-agenda.md`. It lists what the client still owes, blocking questions first — and when those answers come back as a transcript, `fdw-intake` closes the questions against the client's own words. That loop is what drives the blocker count down, so ending a handoff without giving them the agenda wastes the mechanism.
 
@@ -79,6 +99,8 @@ Then hand the BA `next-call-agenda.md`. It lists what the client still owes, blo
 
 - **Only `spec-approved` enters a bundle.** "It's basically done" is how development inherits an argument.
 - **The report warns; the bundle refuses.** Present the number and the names, let the BA decide between bundling what is clean and overriding deliberately, and never reach for the override on their behalf or quietly proceed past a rising count.
+- **An open change record refuses a bundle, for a sharper reason than a question does.** An open question is something nobody has answered; an open change is something the store already knows the spec gets wrong. Handing that to development is shipping a document you know is false.
+- **A delivered change never blocks a phase.** It ships beside it. Holding a phase for work that has already missed it is the failure this path exists to prevent.
 - **Never write the PRD yourself.** bmad-core owns PRD authoring and its reviewer gate; this module owns the quality of the inputs.
 - **Never advance a feature to `handed-off` before the PRD exists.** The status means development has it, and a status that lies breaks every downstream check.
 - **Hand over paths, not a flattened document.** The extraction is `bmad-prd`'s job and it does it better with structure intact.

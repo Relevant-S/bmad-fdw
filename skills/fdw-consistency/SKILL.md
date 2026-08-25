@@ -27,6 +27,16 @@ You report and annotate. You never advance a status and never edit a spec.
 1. Load config via `uv run {project-root}/_bmad/scripts/resolve_config.py --project-root {project-root}`. Resolve `{communication_language}` and `{output_folder}`; `{discovery_folder}` defaults to `{output_folder}/discovery`.
 2. Scope the run. One feature after intake touched it (`--id`), one phase before handoff (`--phase`), or everything when the BA asks how the project hangs together.
 
+Scoping narrows what findings are raised *about*, not what they are compared *against*: a `--phase` scan still pairs every feature in it against the whole store, so a spec being written now is measured against what already shipped. Pairs flagged `against_shipped` are the ones to read first — a new feature repeating delivered behaviour is the most expensive contradiction this audit can find, and it is invisible in the specs alone. `--no-cross-phase` narrows both sides when the store is large and you only want the local picture.
+
+**Which features does a new request touch?**
+
+```
+{audit-cli} impact --root {discovery_folder} --text "<what the client asked for>"
+```
+
+Store-wide by design — a request about something delivered two phases ago has to find it. Each candidate carries its route, so the answer also says which path the change takes: a `delivered` hit goes to `fdw-handoff build-brief`, an `in-flight` one to `fdw-elaborate revise`. Ranked candidates, not a decision; a request can genuinely touch several features.
+
 ```
 {audit-cli} scan --root {discovery_folder} [--phase <p> | --id <F-NNN>] > <scan.json>
 ```

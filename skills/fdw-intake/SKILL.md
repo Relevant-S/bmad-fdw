@@ -58,7 +58,8 @@ Validation errors name their own fix; read and apply them rather than guessing. 
 ## Rules with consequences
 
 - **Provenance or it does not exist.** Every signal entry needs `text`, `anchor`, and a verbatim `quote`. `validate-plan` rejects the plan otherwise, so do not try to work around it — go find the quote, or drop the requirement.
-- **Never write `spec.md`.** A source that contradicts a `spec-approved` or later feature opens a change record (`route: "change-record"`), which `fdw-elaborate` resolves. The spec is a sandbox that only its owner edits; that isolation is the reason it exists.
+- **Never write `spec.md`.** A source that contradicts a `spec-approved` or later feature opens a change record (`route: "change-record"`), which `fdw-elaborate` resolves. The spec is a sandbox that only its owner edits; that isolation is the reason it exists. Set `design_invalidated` honestly — it is what decides whether the prototype and the client's sign-off still cover the feature, and "unknown" costs a redesign nobody needed. A contradiction against a feature already handed off opens a **delivered** change record, which does not wait for the next phase: it goes to `fdw-handoff build-brief`.
+- **One fact, one ledger.** A contradiction against an approved spec becomes a change record, not a change record *and* a question. Below `spec-approved` it becomes a question, because there is no approved spec to change.
 - **A source with nothing new is a real outcome.** Status calls happen. Record it with `{state-cli} record-empty --root {discovery_folder} --source-id … --reason "…"` and say so. Never invent features to justify a run.
 - **Contradiction detection here is narrow** — incoming source against existing state, nothing more. The full cross-feature audit is `fdw-consistency`.
 

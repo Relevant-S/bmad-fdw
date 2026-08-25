@@ -356,11 +356,25 @@ def test_routed_contradiction_writes_changes_md_and_never_touches_spec(tmp_path,
     out = run("apply-plan", "--root", str(root), "--plan", write_plan(tmp_path, plan, "x.json"))
     assert out["delta"]["contradictions"][0]["locked"] is True
     assert (fdir / "spec.md").read_text() == before, "intake must never edit an approved spec"
-    changes = (fdir / "changes.md").read_text()
-    assert "Sessions may now overlap." in changes
-    assert "fdw-elaborate" in changes
+
+    # The record is the ledger; changes.md is the reading surface rendered from it.
+    record = json.loads((fdir / "feature.json").read_text())
+    change = record["changes"][0]
+    assert change["id"] == "F-001-C-01"
+    assert change["text"] == "Sessions may now overlap."
+    assert change["route"] == "in-flight"
+    assert change["status_when_raised"] == "spec-approved"
+    assert change["design_invalidated"] == "true"
+    assert change["status"] == "open"
+    assert out["delta"]["changes"][0]["change_id"] == "F-001-C-01"
+
+    # One fact, one ledger: the locked path no longer also raises a question about it.
+    assert not [q for q in record["questions"] if "Sessions may now overlap" in q["text"]]
+
+    assert "Sessions may now overlap." in (fdir / "changes.md").read_text()
     registry = json.loads((root / "registry.json").read_text())
     assert "changed" in registry["features"][0]["flags"]
+    assert registry["features"][0]["open_changes"] == {"in-flight": 1, "delivered": 0}
 
 
 def test_contradiction_before_approval_stays_an_open_question(tmp_path, root, source):
@@ -760,10 +774,29 @@ def test_phase_open_carries_forward_what_the_last_phase_left(root, two_features)
 
 
 def test_phase_open_carries_open_change_records(root, two_features):
-    fdir = root / "phases/phase-1/features/F-001-session-management"
-    (fdir / "changes.md").write_text("\n## 2026-01-01 — change\n\n- resolution: OPEN — route through fdw-elaborate.\n")
+    run("feature-set", "--root", str(root), "--id", "F-001", "--status", "designing", "--by", "t")
+    run("feature-set", "--root", str(root), "--id", "F-001", "--status", "client-review", "--by", "t")
+    run("feature-set", "--root", str(root), "--id", "F-001", "--status", "design-approved", "--by", "t")
+    run("feature-set", "--root", str(root), "--id", "F-001", "--status", "speccing", "--by", "t")
+    run("feature-set", "--root", str(root), "--id", "F-001", "--status", "spec-approved", "--by", "t")
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "Overlap is allowed now.",
+        "--source", "call with the client")
     out = run("phase-open", "--root", str(root), "--phase", "phase-2", "--from", "phase-1")
-    assert out["carried_over"]["changes"] == ["F-001"]
+    carried = out["carried_over"]["changes"]
+    assert [c["change_id"] for c in carried] == ["F-001-C-01"]
+    assert carried[0]["feature"] == "F-001"
+    assert carried[0]["route"] == "in-flight"
+
+
+def test_a_change_scheduled_to_a_phase_surfaces_when_that_phase_opens(root, two_features):
+    for stage in ("designing", "client-review", "design-approved", "speccing", "spec-approved"):
+        run("feature-set", "--root", str(root), "--id", "F-001", "--status", stage, "--by", "t")
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "Bigger than this phase.",
+        "--source", "call")
+    run("change-close", "--root", str(root), "--change-id", "F-001-C-01",
+        "--resolution", "too big for phase-1", "--outcome", "scheduled", "--scheduled-to", "phase-2")
+    out = run("phase-open", "--root", str(root), "--phase", "phase-2", "--from", "phase-1")
+    assert [c["change_id"] for c in out["carried_over"]["changes"]] == ["F-001-C-01"]
 
 
 def test_a_second_phase_cannot_be_opened_twice(root, two_features):
@@ -952,3 +985,138 @@ def test_as_built_seed_can_prepend_with_force(root):
 def test_as_built_seed_needs_a_store(tmp_path):
     payload = run("as-built-seed", "--root", str(tmp_path / "nope"), "--text", "x", expect_ok=False)
     assert "init" in payload["errors"][0]
+
+
+# ---------------------------------------------------------------- change records
+
+
+def _locked(root, status="spec-approved"):
+    for stage in ("designing", "client-review", "design-approved", "speccing", "spec-approved"):
+        run("feature-set", "--root", str(root), "--id", "F-001", "--status", stage, "--by", "t")
+        if stage == status:
+            return
+    if status == "handed-off":
+        run("feature-set", "--root", str(root), "--id", "F-001", "--status", "handed-off", "--by", "t")
+
+
+def test_change_add_below_spec_approved_is_refused_and_names_question_add(root, two_features):
+    payload = run("change-add", "--root", str(root), "--id", "F-001", "--text", "x",
+                  "--source", "call", expect_ok=False)
+    assert "question-add" in payload["errors"][0]
+
+
+def test_a_change_raised_after_handoff_routes_to_delivered(root, two_features):
+    _locked(root, "handed-off")
+    out = run("change-add", "--root", str(root), "--id", "F-001", "--text", "Urgent fix.",
+              "--source", "call")
+    assert out["routes"]["F-001-C-01"] == "delivered"
+    assert any("build-brief" in w for w in out["warnings"])
+
+
+def test_the_route_is_frozen_at_raise_time(root, two_features):
+    """A change the BA agreed to absorb must not become somebody else's work because the phase
+    moved on underneath it."""
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "Absorb this.",
+        "--source", "call")
+    run("feature-set", "--root", str(root), "--id", "F-001", "--status", "handed-off", "--by", "t")
+    record = json.loads((root / "phases/phase-1/features/F-001-session-management/feature.json").read_text())
+    assert record["changes"][0]["route"] == "in-flight"
+    assert record["changes"][0]["status_when_raised"] == "spec-approved"
+
+
+def test_change_ids_come_from_the_highest_in_use(root, two_features):
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "a", "--source", "s",
+        "--change-id", "F-001-C-09")
+    out = run("change-add", "--root", str(root), "--id", "F-001", "--text", "b", "--source", "s")
+    assert out["added"] == ["F-001-C-10"], "length-plus-one would collide with C-09"
+
+
+def test_a_bad_batch_entry_writes_nothing_at_all(root, two_features, tmp_path):
+    _locked(root)
+    batch = tmp_path / "b.json"
+    batch.write_text(json.dumps({"feature": "F-001", "source": "call", "changes": [
+        {"text": "fine"}, {"text": "", "criticality": "urgent"}]}))
+    run("change-add", "--root", str(root), "--from", str(batch), expect_ok=False)
+    record = json.loads((root / "phases/phase-1/features/F-001-session-management/feature.json").read_text())
+    assert record.get("changes", []) == []
+
+
+def test_an_ingested_source_needs_an_anchor_and_a_quote(root, two_features):
+    _locked(root)
+    payload = run("change-add", "--root", str(root), "--id", "F-001", "--text", "x",
+                  "--source", "2026-08-25-call", expect_ok=False)
+    assert "anchored or it is hearsay" in payload["errors"][0]
+
+
+def test_change_close_needs_a_named_record(root, two_features):
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "a", "--source", "s")
+    payload = run("change-close", "--root", str(root), "--change-id", "F-001-C-99",
+                  "--resolution", "x", "--absorbed-by", "F-001-R-01", expect_ok=False)
+    assert "No change" in payload["errors"][0]
+
+
+def test_the_changed_flag_clears_only_when_the_last_change_closes(root, two_features):
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "a", "--source", "s")
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "b", "--source", "s")
+    out = run("change-close", "--root", str(root), "--change-id", "F-001-C-01",
+              "--resolution", "done", "--absorbed-by", "F-001-R-01")
+    assert "changed" in out["flags"], "one closed, one still open"
+    out = run("change-close", "--root", str(root), "--change-id", "F-001-C-02",
+              "--resolution", "done", "--absorbed-by", "F-001-R-01")
+    assert "changed" not in out["flags"]
+
+
+def test_scheduled_needs_a_destination(root, two_features):
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "a", "--source", "s")
+    payload = run("change-close", "--root", str(root), "--change-id", "F-001-C-01",
+                  "--resolution", "later", "--outcome", "scheduled", expect_ok=False)
+    assert "--scheduled-to" in payload["errors"][0]
+
+
+def test_validate_catches_a_duplicate_change_id(root, two_features):
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "a", "--source", "s")
+    fdir = root / "phases/phase-1/features/F-001-session-management"
+    record = json.loads((fdir / "feature.json").read_text())
+    record["changes"].append(dict(record["changes"][0]))
+    (fdir / "feature.json").write_text(json.dumps(record))
+    payload = run("validate", "--root", str(root), expect_ok=False)
+    assert any("duplicate change id" in p for p in payload["problems"])
+
+
+def test_changes_md_is_regenerated_from_the_ledger(root, two_features):
+    _locked(root)
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "a", "--source", "s")
+    changes = root / "phases/phase-1/features/F-001-session-management/changes.md"
+    changes.write_text("hand-edited nonsense\n")
+    run("change-add", "--root", str(root), "--id", "F-001", "--text", "b", "--source", "s")
+    text = changes.read_text()
+    assert "hand-edited nonsense" not in text, "derived files are rewritten, not merged"
+    assert "F-001-C-01" in text and "F-001-C-02" in text
+
+
+def test_a_change_may_be_raised_against_a_feature_in_a_closed_phase(root, two_features):
+    """Case 2 is exactly this. Gating writes into a closed phase uniformly would break it."""
+    _locked(root, "handed-off")
+    phase = root / "phases/phase-1/phase.json"
+    record = json.loads(phase.read_text())
+    record["status"] = "closed"
+    phase.write_text(json.dumps(record))
+    out = run("change-add", "--root", str(root), "--id", "F-001", "--text", "Urgent.", "--source", "s")
+    assert out["routes"]["F-001-C-01"] == "delivered"
+
+
+def test_a_feature_cannot_be_moved_into_a_closed_phase(root, two_features):
+    run("phase-open", "--root", str(root), "--phase", "phase-2")
+    phase = root / "phases/phase-2/phase.json"
+    record = json.loads(phase.read_text())
+    record["status"] = "closed"
+    phase.write_text(json.dumps(record))
+    payload = run("phase-move", "--root", str(root), "--id", "F-001", "--to", "phase-2",
+                  "--reason", "x", expect_ok=False)
+    assert "closed" in payload["errors"][0]

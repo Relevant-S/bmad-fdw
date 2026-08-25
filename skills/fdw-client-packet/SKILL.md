@@ -80,7 +80,7 @@ Read what it gives back before running anything:
 
 - **Answered** — one person answered, or several said the same thing. The `question-close` command comes with the client's own words as the quote.
 - **Conflicts** — two people answered the same question differently. It refuses to close those and names both. Take it back to the client or make the call with the BA; a script that picked one would be inventing a client decision, which is the one thing this module never does.
-- **Corrections** — an assumption they disagreed with. That is not a closed question, it is a requirement nobody had written down: send it to `fdw-design` so the prototype and the notes stay true.
+- **Corrections** — an assumption they disagreed with. That is not a closed question, it is a requirement nobody had written down: send it to `fdw-design` so the prototype and the notes stay true. **Once the spec is approved the same correction is a change record**, and `sync` prints the `change-add` command instead — run it, then `fdw-elaborate revise`. A correction against an approved spec routed to design as prose leaves the spec quietly saying something the client has told you is wrong.
 - **Blocked by** — why sign-off is not being offered yet.
 
 - **Unanswered assumptions** — they asked for a verdict and got none. Silence is not agreement, so sign-off is withheld and each one is named. A comment with no verdict is `unclear`, which is not confirmation either.

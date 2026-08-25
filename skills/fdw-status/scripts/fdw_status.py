@@ -118,7 +118,14 @@ def collect(root: Path, phase_filter: str | None) -> dict[str, Any]:
             if (fdir / "design").exists()
             else False,
             "has_spec": (fdir / "spec.md").exists(),
-            "has_changes": (fdir / "changes.md").exists(),
+            # A count, not a boolean: the file existing was true forever once one change had ever
+            # been raised, so the dashboard said "changes" on a feature with nothing open.
+            "open_changes": len([c for c in record.get("changes", [])
+                                 if c.get("status", "open") == "open"]),
+            "delivered_changes": len([c for c in record.get("changes", [])
+                                      if c.get("outcome") == "delivered"]),
+            "has_changes": any(c.get("status", "open") == "open"
+                               for c in record.get("changes", [])),
         }
         board.append(entry)
         for question in open_q:
@@ -423,7 +430,9 @@ def render_html(s: dict[str, Any]) -> str:
                 q.append(f"<span class='chip'>{f['non_critical']} minor</span>")
             artifacts = " ".join(
                 f"<span class='chip'>{name}</span>"
-                for name, present in (("design", f["has_design"]), ("spec", f["has_spec"]), ("changes", f["has_changes"]))
+                for name, present in (("design", f["has_design"]), ("spec", f["has_spec"]),
+                                      (f"{f['open_changes']} open change(s)" if f["open_changes"]
+                                       else "changes", f["has_changes"]))
                 if present
             )
             size = f"<span class='chip'>{esc(f['size'])}</span> " if f["size"] else ""

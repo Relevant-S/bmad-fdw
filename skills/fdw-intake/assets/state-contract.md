@@ -1,4 +1,4 @@
-# fdw Discovery State Contract v1
+# fdw Discovery State Contract v2
 
 The shared data contract for the fdw (Feature Discovery Workflow) module. Every fdw skill reads and
 writes the store through the module-shared state CLI, never by hand-editing JSON:
@@ -8,8 +8,8 @@ uv run {skill-root}/scripts/fdw_state.py <command> --root {discovery_folder}
 ```
 
 Commands: `init`, `normalize`, `context`, `validate-plan`, `apply-plan`, `record-empty`,
-`feature-set`, `question-add`, `question-close`, `phase-open`, `phase-move`, `phase-close`,
-`as-built-seed`, `validate`. It is the only writer; skills bundle no copy of it. `fdw-intake` owns
+`feature-set`, `question-add`, `question-close`, `change-add`, `change-close`, `phase-open`,
+`phase-move`, `phase-close`, `as-built-seed`, `validate`. It is the only writer; skills bundle no copy of it. `fdw-intake` owns
 this contract file, and `init` copies it into the store as `CONTRACT.md` so the store describes itself.
 
 ## Layout
@@ -35,7 +35,8 @@ this contract file, and `init` copies it into the store as `CONTRACT.md` so the 
           signal.md            # anchored evidence — no inference
           design/              # fdw-design: prototype/, ux-notes.md, empty-state.md, grounding.json
           spec.md              # fdw-elaborate only — THE SANDBOX
-          changes.md           # change records raised after approval
+          changes.md           # derived view of feature.json["changes"] — regenerated on every write
+          builds/              # fdw-handoff build-brief: intent files for an urgent change
           client-packets/      # fdw-client-packet: the page sent, its id map, the replies filed
       handoff/                 # phase-level: the bundle covers every feature in the phase
 ```
@@ -106,6 +107,16 @@ Mirrors the registry entry and adds what the index deliberately omits: `summary`
       "raised": "2026-08-22", "raised_by": "2026-08-22-academy-call"
     }
   ],
+  "changes": [
+    {
+      "id": "F-003-C-01", "text": "Sessions may now overlap; the earlier rule is withdrawn.",
+      "anchor": "2026-09-01-call#t=12:03", "quote": "вони можуть перетинатися",
+      "criticality": "critical", "route": "in-flight", "status": "open",
+      "design_invalidated": "true", "status_when_raised": "spec-approved",
+      "requirements_digest": "sha256…", "question_id": null, "note": null,
+      "raised": "2026-09-01", "raised_by": "2026-09-01-call"
+    }
+  ],
   "created": "2026-08-22", "updated": "2026-08-22"
 }
 ```
@@ -163,6 +174,39 @@ lives in `text`.
 to answer it. Ids are `{feature-id}-Q-NN`. The count in the registry mirrors open questions in
 `feature.json`; `fdw_state.py validate` catches drift.
 
+## Changes
+
+A change record is what a request against an **already approved** spec becomes. Below
+`spec-approved` there is nothing to change — a contradiction there is a question, or an edit to a
+draft nobody has committed to. Ids are `{feature-id}-C-NN`, minted once and never renumbered.
+
+**`route` is the fork the whole thing turns on, and it is frozen at raise time.**
+
+| `route` | When | What happens |
+| --- | --- | --- |
+| `in-flight` | Raised while the feature was below `handed-off` | The spec reopens. `fdw-elaborate revise` moves the feature backward — that is what rework is — and `absorb` records which requirements now carry it. It ships with its phase. |
+| `delivered` | Raised at or after `handed-off` | The spec is amended **in place** and the feature does **not** move: `handed-off` is a fact about delivery, and moving it would corrupt as-built's filter, `phase-close`'s finished check and the frozen `blocker_count_at_handoff`. `fdw-handoff build-brief` sends it to `/bmad-build` on its own clock. |
+
+Frozen, because a change the BA agreed to absorb must not become somebody else's work just because
+the phase moved on underneath it.
+
+`status` is `open` → `absorbed` | `scheduled` | `delivered` | `dropped`. `scheduled` needs a
+`scheduled_to` phase and surfaces again when that phase opens — deferring is a destination, not a
+shrug. `design_invalidated` (`true`/`false`/`unknown`) decides whether the prototype and the
+client's sign-off still cover it.
+
+The registry mirrors open changes as `open_changes: {in-flight, delivered}`, and the `changed` flag
+is set **iff** an open change exists. `validate` fails the store on either drifting.
+
+**Gates.** An open in-flight change blocks `fdw-elaborate approve` and `fdw-handoff bundle`. On
+approve it is not bypassable by `--accept-open-blockers`: accepting a blocker you can name is a
+decision, approving a spec you know contradicts the store is not. A delivered change blocks
+neither — it ships beside the phase, not inside it.
+
+`changes.md` is a **derived view**, regenerated from the ledger on every write. Unlike
+`questions.md`, which `fdw-consistency rollup` regenerates on demand, this one is feature-local and
+gets read mid-absorption, so it must never be stale between two commands.
+
 ## sources/.pending/
 
 `normalize` writes `{source_id}.source.json` here — the source block, so no skill ever transcribes a
@@ -182,7 +226,13 @@ corruption — it is preserved evidence from an abandoned run. `validate` report
 ## phase.json
 
 `phase`, `status` (`open` / `closed`), `opened`, `closed`, `exit_criteria`, `features` (ids),
-`carried_over`, `blocker_count_at_handoff`, `prd_path`.
+`carried_over`, `blocker_count_at_handoff`, `blockers_at_handoff`,
+`open_question_count_at_handoff`, `open_changes_at_close`, `prd_path`.
+
+A closed phase is a record of what was handed off. `apply-plan` will not create a feature in one and
+`phase-move` will not move into one without `--force`. Raising a **change** against a feature in a
+closed phase is deliberately still allowed — that is exactly what an urgent change to delivered work
+is, and gating it uniformly would break the case this exists to serve.
 
 `blocker_count_at_handoff` is the module's own evaluation metric — unresolved critical questions at
 the moment a phase handed off. Recorded per phase so the trend across phases is real data.

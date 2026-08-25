@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import sys
 from datetime import date
@@ -30,6 +31,18 @@ ELIGIBLE = "spec-approved"
 REQ = re.compile(r"^\s*-\s+\*\*\[(?P<id>[A-Z0-9-]+-R-\d+)\]\*\*\s+(?P<body>.+?)\s*$", re.M)
 # A question bullet that never got an id: written in the spec, counted by nothing.
 UNFILED_Q = re.compile(r"^\s*-\s+\*\*(?:critical|non-critical)\*\*\s*\((?:client|internal|dev)\)", re.M | re.I)
+
+
+AMENDED_MARK = re.compile(r"\s*_\(amended\s+\d{4}-\d{2}-\d{2}[^)]*\)_\s*$")
+SUPERSEDED_MARK = re.compile(r"\s*_\(superseded\s+\d{4}-\d{2}-\d{2}[^)]*\)_\s*$")
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """as-built.md is what every later phase is specced against; a torn write here is the worst
+    single loss in the store."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def phase_key(label: str) -> tuple[int, ...]:
@@ -85,7 +98,7 @@ def load(root: Path, phase: str) -> dict[str, Any]:
         fdir = root / "phases" / phase / "features" / f"{entry['id']}-{entry['slug']}"
         record = read_json(fdir / "feature.json", {})
         spec = (fdir / "spec.md").read_text(encoding="utf-8") if (fdir / "spec.md").exists() else ""
-        changes = (fdir / "changes.md").read_text(encoding="utf-8") if (fdir / "changes.md").exists() else ""
+
         open_q = [q for q in record.get("questions", []) if q.get("status", "open") == "open"]
         features.append({
             **{k: entry.get(k) for k in ("id", "title", "slug", "phase", "status", "size")},
@@ -96,7 +109,13 @@ def load(root: Path, phase: str) -> dict[str, Any]:
             "requirements": [{"id": m.group("id"), "text": m.group("body")} for m in REQ.finditer(spec)],
             "open_questions": open_q,
             "critical_open": [q for q in open_q if q.get("criticality") == "critical"],
-            "open_changes": changes.count("resolution: OPEN"),
+            "changes": record.get("changes", []),
+            "open_changes": [c for c in record.get("changes", [])
+                             if c.get("status", "open") == "open"
+                             and c.get("route") != "delivered"],
+            "open_delivered": [c for c in record.get("changes", [])
+                               if c.get("status", "open") == "open"
+                               and c.get("route") == "delivered"],
             "design_dir": (fdir / "design") if (fdir / "design").exists() else None,
         })
     return {
@@ -145,7 +164,12 @@ def cmd_preflight(args: argparse.Namespace) -> None:
         for f in eligible for q in f["critical_open"]
     ]
     minor = sum(len(f["open_questions"]) - len(f["critical_open"]) for f in eligible)
-    changes = [{"feature": f["id"], "open": f["open_changes"]} for f in eligible if f["open_changes"]]
+    # Named, not counted: a table saying "F-001 · 2" tells the BA nothing they can act on.
+    changes = [
+        {"feature": f["id"], "change_id": c["id"], "text": c.get("text", ""),
+         "route": c.get("route"), "design_invalidated": c.get("design_invalidated")}
+        for f in eligible for c in f["open_changes"]
+    ]
 
     everywhere = data["everywhere"]
     selected = {f["id"] for f in eligible}
@@ -360,6 +384,26 @@ def cmd_bundle(args: argparse.Namespace) -> None:
             clean_features=clean,
         )
 
+    # A change record is a contradiction the spec has not absorbed yet. Bundling it hands
+    # development a document that is already known to be wrong — a different failure from an
+    # open question, which merely hands them one nobody has answered.
+    changing = [(f, c) for f in eligible for c in f["open_changes"]]
+    if changing and not args.accept_open_blockers:
+        listed = ", ".join(f"{c['id']} ({f['id']})" for f, c in changing)
+        clean = [f["id"] for f in eligible if not f["open_changes"]]
+        die(
+            [
+                f"{args.phase}: {len(changing)} open change record(s) would travel into the PRD — "
+                f"{listed}. The store records a change these specs do not say yet.",
+                (f"Absorb them with fdw-elaborate revise, bundle only what is clean with "
+                 f"--id {' --id '.join(clean)}, or" if clean else "Absorb them, or") +
+                " pass --accept-open-blockers --reason \"…\" to hand off knowingly.",
+            ],
+            phase=args.phase,
+            open_change_records=[c["id"] for _, c in changing],
+            clean_features=clean,
+        )
+
     out_dir = root / "phases" / args.phase / "handoff"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = args.date or date.today().isoformat()
@@ -395,6 +439,7 @@ def cmd_bundle(args: argparse.Namespace) -> None:
         "requirements_total": sum(len(f["requirements"]) for f in eligible),
         "critical_blockers": [q["id"] for f in eligible for q in f["critical_open"]],
         "accepted_blockers": ([q["id"] for _, q in travelling] if args.accept_open_blockers else []),
+        "accepted_changes": ([c["id"] for _, c in changing] if args.accept_open_blockers else []),
         "override_reason": (args.reason if args.accept_open_blockers else None),
         "readme": str(readme.relative_to(root)),
         "source_documents": [str(readme.relative_to(root))] + sources,
@@ -487,6 +532,181 @@ def cmd_bundle(args: argparse.Namespace) -> None:
     })
 
 
+# ---------------------------------------------------------------- build brief
+
+
+_TERM_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+_STOP = {"the", "and", "for", "with", "that", "this", "from", "are", "not", "can", "has", "its",
+         "into", "when", "which", "each", "per", "any", "all", "one", "two", "must", "still"}
+
+
+def _terms(text: str) -> set[str]:
+    return {w.casefold() for w in _TERM_RE.findall(str(text))} - _STOP
+
+
+def _relevant(lines: list[str], change_text: str, keep: int) -> tuple[list[str], int]:
+    """The requirements a change plausibly touches, most relevant first.
+
+    A large feature's full as-built dump is 30+ lines and blows bmad-build's whole token budget
+    before the change is even described. Ranking keeps the brief self-contained about the part
+    that matters; the count of what was left out is reported rather than silently dropped."""
+    wanted = _terms(change_text)
+    scored = sorted(lines, key=lambda l: -len(wanted & _terms(l)))
+    hits = [l for l in scored if wanted & _terms(l)]
+    chosen = hits[:keep] if hits else scored[:keep]
+    # Preserve document order: requirement ids read as a sequence, not a ranking.
+    chosen = [l for l in lines if l in set(chosen)]
+    return chosen, len(lines) - len(chosen)
+
+
+def _as_built_lines(root: Path, phase: str, fid: str) -> list[str]:
+    """The delivered requirement lines for one feature, read from as-built rather than the spec.
+
+    This is what makes the brief self-contained: a build agent that has never seen the discovery
+    store gets the behaviour that actually shipped, not the discovery history behind it."""
+    path = root / "as-built.md"
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8")
+    if f"## {phase}" not in text:
+        return []
+    section = text.split(f"## {phase}", 1)[1]
+    nxt = re.search(r"^## ", section, re.M)
+    if nxt:
+        section = section[:nxt.start()]
+    block, found = [], False
+    for line in section.splitlines():
+        if line.startswith("### "):
+            found = f"`{fid}`" in line
+            continue
+        if found and line.strip().startswith(f"- `{fid}-R-"):
+            block.append(line.strip())
+    return block
+
+
+def cmd_build_brief(args: argparse.Namespace) -> None:
+    """Write a self-contained intent file for bmad-build.
+
+    Deliberately NOT a bmad-build spec: that template carries a Code Map and a task list this
+    module has no basis to fill in, and step-01 routes a file with `status:` frontmatter as a
+    resumable spec. An intent file is the sanctioned handshake, and bmad-build's own planning
+    step does the codebase work fdw cannot."""
+    root = Path(args.root).resolve()
+    registry = read_json(root / "registry.json")
+    if registry is None:
+        die([f"No discovery store at {root}."])
+    fid = args.change_id.rsplit("-C-", 1)[0]
+    entry = next((f for f in registry.get("features", []) if f["id"] == fid), None)
+    if entry is None:
+        die([f"'{args.change_id}' does not name a known feature."])
+    fdir = root / "phases" / entry["phase"] / "features" / f"{entry['id']}-{entry['slug']}"
+    record = read_json(fdir / "feature.json", {})
+    change = next((c for c in record.get("changes", []) if c.get("id") == args.change_id), None)
+    if change is None:
+        die([f"No change '{args.change_id}' on {fid}."])
+    if entry["status"] not in {"handed-off", "shipped"}:
+        die([f"{fid} is '{entry['status']}' — it has not been handed to development, so there is "
+             f"nothing shipped to change. Absorb it into the spec with fdw-elaborate revise."])
+    if change.get("route") != "delivered":
+        die([f"{args.change_id} is an in-flight change against a spec that is still the BA's. "
+             f"Run fdw-elaborate revise — reopening the spec is cheaper than a side build."])
+    if change.get("status", "open") != "open":
+        die([f"{args.change_id} is already '{change['status']}'."])
+
+    phase_record = read_json(root / "phases" / entry["phase"] / "phase.json", {}) or {}
+    warnings = []
+    if phase_record.get("status") == "open" and phase_record.get("prd_path"):
+        warnings.append(
+            f"{entry['phase']} is still open and its PRD exists at "
+            f"`{phase_record['prd_path']}`. If the team has not built this yet, amending that PRD "
+            f"through bmad-prd is cheaper than a side-channel build and keeps one source of truth.")
+
+    shipped = _as_built_lines(root, entry["phase"], fid)
+    spec_text = (fdir / "spec.md").read_text(encoding="utf-8") if (fdir / "spec.md").exists() else ""
+    if not shipped:
+        shipped = [f"- `{m.group('id')}` {m.group('body')}" for m in REQ.finditer(spec_text)
+                   if not SUPERSEDED_MARK.search(m.group("body"))]
+    grounding = read_json(fdir / "design" / "grounding.json", {}) or {}
+    sources = sorted({str(sc.get("source")) for sc in grounding.get("screens", []) if sc.get("source")})
+    siblings = [f["id"] for f in registry.get("features", [])
+                if f["phase"] == entry["phase"] and f["id"] != fid]
+
+    stamp = args.date or date.today().isoformat()
+    lines = [
+        "---",
+        f"feature: {fid}",
+        f"change: {change['id']}",
+        f"type: {args.type}",
+        f"discovery_store: {root}",
+        "---",
+        "",
+        f"# {entry['title']} — {change['id']}",
+        "",
+        "## What changed",
+        "",
+        change.get("text", ""),
+        "",
+    ]
+    if change.get("quote"):
+        lines += [f"> {change['quote']}", ""]
+    if change.get("anchor"):
+        lines += [f"Source: `{change['anchor']}` · raised {change.get('raised', '?')} by "
+                  f"{change.get('raised_by', '?')}", ""]
+    shown, omitted = _relevant(shipped, change.get("text", ""), args.max_requirements)
+    lines += ["## What exists today", "",
+              f"{record.get('summary', '') or entry['title']}", ""]
+    lines += shown or ["- _No delivered requirements recorded._"]
+    if omitted:
+        lines += ["", f"_{omitted} further delivered requirement(s) for {fid} are not listed here "
+                      f"because they do not touch this change. The full set is in "
+                      f"`as-built.md`, section `{entry['phase']}`._"]
+    lines += ["", "## What must be true after", "",
+              "- " + change.get("text", ""), ""]
+    lines += ["## Do not change", "",
+              "- Any behaviour not named above.",
+              f"- Anything belonging to {', '.join(siblings) if siblings else 'another feature'} — "
+              f"they are separate features in the same phase.", ""]
+    if sources:
+        lines += ["## Where this lives", "",
+                  "The prototype for this feature was cloned from these real files:", ""]
+        lines += [f"- `{src}`" for src in sources]
+        lines += [""]
+    else:
+        lines += ["## Where this lives", "",
+                  "_Unknown — no grounding recorded. Investigate before changing anything._", ""]
+    lines += ["---", "",
+              f"When this ships, close the record so as-built stays true:", "",
+              "```",
+              f"uv run {Path(__file__).resolve().parents[2]}/fdw-intake/scripts/fdw_state.py "
+              f"change-close --root {root} --change-id {change['id']} \\",
+              f'  --resolution "…" --outcome delivered --delivered-in "<PR or build>"',
+              "```", ""]
+
+    out = Path(args.out) if args.out else (fdir / "builds" / f"{stamp}-{change['id']}.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(lines)
+    out.write_text(body, encoding="utf-8")
+
+    # bmad-build targets 900-1300 tokens and treats 1600 as the context-rot threshold. This brief
+    # becomes input to that spec, so it has to leave room.
+    estimate = int(len(body.split()) * 1.35)
+    if estimate > 1600:
+        warnings.append(f"The brief is roughly {estimate} tokens, above bmad-build's 1600 "
+                        f"threshold. 'What exists today' carries {len(shown)} requirement lines — "
+                        f"lower --max-requirements, or split the change.")
+    if omitted:
+        warnings.append(f"{omitted} of {fid}'s {len(shipped)} delivered requirements are not in "
+                        f"the brief — they share no vocabulary with the change. Raise "
+                        f"--max-requirements if the build needs more context.")
+
+    emit({"feature": fid, "change": change["id"], "brief": str(out.relative_to(root)),
+          "estimated_tokens": estimate, "delivered_requirements": len(shipped),
+          "requirements_shown": len(shown), "requirements_omitted": omitted,
+          "grounding_sources": sources, "warnings": warnings,
+          "next": f"Run /bmad-build against {out} — it is an intent file, not a spec, so "
+                  f"bmad-build does its own planning."})
+
+
 # ---------------------------------------------------------------- as-built
 
 
@@ -503,25 +723,72 @@ def cmd_as_built(args: argparse.Namespace) -> None:
     text = path.read_text(encoding="utf-8") if path.exists() else "# As-Built Baseline\n"
     text = text.replace("\n_Nothing shipped yet._\n", "\n")
     marker = f"## {args.phase}"
-    if marker in text:
-        die([f"as-built.md already has a '{args.phase}' section. Remove it first if you mean to regenerate."])
+    if marker in text and not args.rebuild:
+        die([f"as-built.md already has a '{args.phase}' section. Pass --rebuild to regenerate it "
+             f"from the current specs — that is how a change to delivered work lands here."])
 
     stamp = args.date or date.today().isoformat()
-    lines = [text.rstrip(), "", marker, "",
-             f"_Shipped {stamp}"
-             + (f" · PRD `{data['phase_record'].get('prd_path')}`" if data["phase_record"].get("prd_path") else "")
-             + "_", ""]
+    # A rebuild must not restamp the ship date: the phase shipped when it shipped, and the whole
+    # point of this file is that it says what actually happened.
+    if marker in text and not args.date:
+        prior = re.search(rf"^## {re.escape(args.phase)}\s*\n+_Shipped (\d{{4}}-\d{{2}}-\d{{2}})",
+                          text, re.M)
+        if prior:
+            stamp = prior.group(1)
+    prd = args.prd_path or data["phase_record"].get("prd_path")
+
+    # Which requirements a change touched, and what they said before it did. A change absorbed
+    # into the spec but not yet delivered means the spec is ahead of reality, and this file is
+    # the one place that has to state what actually shipped rather than what is planned.
+    amended: dict[str, dict[str, Any]] = {}
+    for feature in shipped:
+        for change in feature.get("changes", []):
+            for rid in change.get("absorbed_by", []):
+                amended[rid] = change
+            for rid in [r.get("id") for r in change.get("supersedes", []) if isinstance(r, dict)]:
+                amended[rid] = change
+
+    landed = [c for f in shipped for c in f.get("changes", []) if c.get("outcome") == "delivered"]
+    pending = [c for f in shipped for c in f.get("changes", []) if c.get("outcome") == "absorbed"]
+
+    head = [marker, "",
+            f"_Shipped {stamp}" + (f" · PRD `{prd}`" if prd else "") + "_"]
+    if landed:
+        head.append("")
+        head.append("_Amended " + ", ".join(
+            f"{c.get('resolved', '?')} · `{c['id']}`" for c in sorted(landed, key=lambda c: c["id"])) + "_")
+    block = head + [""]
     for feature in sorted(shipped, key=lambda f: f["id"]):
-        lines.append(f"### {feature['title']} (`{feature['id']}`)")
-        lines.append("")
-        lines.append(feature["summary"] or "_No summary recorded._")
-        lines.append("")
+        block.append(f"### {feature['title']} (`{feature['id']}`)")
+        block.append("")
+        block.append(feature["summary"] or "_No summary recorded._")
+        block.append("")
         for req in feature["requirements"]:
-            lines.append(f"- `{req['id']}` {req['text']}")
+            body = SUPERSEDED_MARK.sub("", AMENDED_MARK.sub("", req["text"])).rstrip()
+            change = amended.get(req["id"])
+            if change is None:
+                block.append(f"- `{req['id']}` {body}")
+            elif change.get("outcome") == "delivered":
+                block.append(f"- `{req['id']}` {body} _(amended {change.get('resolved', '?')} · "
+                             f"`{change['id']}`)_")
+            else:
+                # Absorbed but not delivered: the shipped truth is what it said before.
+                block.append(f"- `{req['id']}` {body} _(a change is absorbed into the spec but "
+                             f"has not shipped — `{change['id']}`)_")
         if not feature["requirements"]:
-            lines.append("- _No approved requirements recorded._")
-        lines.append("")
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+            block.append("- _No approved requirements recorded._")
+        block.append("")
+
+    if marker in text:
+        before, rest = text.split(marker, 1)
+        after = ""
+        nxt = re.search(r"^## ", rest, re.M)
+        if nxt:
+            after = rest[nxt.start():]
+        lines = [before.rstrip(), ""] + block + ([after.rstrip()] if after else [])
+    else:
+        lines = [text.rstrip(), ""] + block
+    _write_atomic(path, "\n".join(lines).rstrip() + "\n")
     emit({"as_built": str(path.relative_to(root)), "phase": args.phase,
           "features": [f["id"] for f in shipped],
           "requirements": sum(len(f["requirements"]) for f in shipped)})
@@ -552,7 +819,21 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--root", required=True)
     p.add_argument("--phase", required=True)
     p.add_argument("--date", default=None)
+    p.add_argument("--rebuild", action="store_true",
+                   help="regenerate this phase's section from the current specs")
+    p.add_argument("--prd-path", dest="prd_path", default=None,
+                   help="override; phase.json only carries it once phase-close has run")
     p.set_defaults(func=cmd_as_built)
+
+    p = sub.add_parser("build-brief", help="intent file for bmad-build: an urgent change to delivered work")
+    p.add_argument("--root", required=True)
+    p.add_argument("--change-id", dest="change_id", required=True)
+    p.add_argument("--type", default="bugfix", choices=["feature", "bugfix", "refactor", "chore"])
+    p.add_argument("--date", default=None)
+    p.add_argument("--out", default=None)
+    p.add_argument("--max-requirements", dest="max_requirements", type=int, default=8,
+                   help="how much delivered context to carry; what is dropped is reported")
+    p.set_defaults(func=cmd_build_brief)
 
     args = parser.parse_args(argv)
     args.func(args)

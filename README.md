@@ -31,7 +31,9 @@ messy client input  →  a list of features  →  a working prototype
                     →  a requirements document for developers
 ```
 
-And it keeps a record. Every single requirement it writes down can be traced back to the moment someone actually asked for it — the exact sentence, from the exact call, on the exact date. When a client says "we never asked for that," you can show them.
+That is the happy path, and it is not the whole picture, because clients change their minds constantly. There are two ways back into something already written down: if developers do not have it yet, the specification reopens and absorbs the change; if they do, it is amended in place and the fix ships on its own without waiting for the next round. Neither happens silently.
+
+And it keeps a record. Every single requirement it writes down can be traced back to the moment someone actually asked for it — the exact sentence, from the exact call, on the exact date. When a client says "we never asked for that," you can show them. The same is true of every change they asked for after signing something off, which on a fixed-price contract is the difference between absorbing it and billing for it.
 
 ### What you get out of it
 
@@ -41,6 +43,8 @@ And it keeps a record. Every single requirement it writes down can be traced bac
 - **A specification per feature**, with every requirement traceable to its source.
 - **A requirements document (PRD)** per delivery phase, handed to the developers.
 - **A record of every decision**, that survives from one phase to the next.
+- **A trail for every change** the client asked for after approving something — what they said, when, and which requirements it moved.
+- **An accurate record of what actually shipped**, kept true when delivered work is changed later, so each phase is written against the real product rather than against an old document.
 
 ### One term you will see everywhere
 
@@ -116,7 +120,19 @@ flowchart TD
     F --> G["HANDOFF<br/>bundle + PRD for developers"]
     G --> H["PHASE<br/>close this one, open the next"]
     H -.->|"next phase"| B
+
+    B --> X{"a change to something<br/>already written down?"}
+    X -->|"spec not handed off yet"| R["REVISE<br/>absorb it into the spec"]
+    R --> E
+    R -.->|"the screens change"| C
+    X -->|"already delivered"| U["BUILD BRIEF<br/>ships on its own clock"]
+    U --> V["/bmad-build"]
 ```
+
+The two paths on the right are the answer to "the client changed their mind", and which one you are
+on is decided by the module, not by you: a change against a feature that has not been handed to
+development reopens its spec, and one against a feature that has been amends the spec in place and
+goes straight to a build. The second never waits for the next phase — that is the whole point of it.
 
 ### Step 1 — Intake: get it into the system
 
@@ -189,9 +205,21 @@ When you are happy:
 
 > "Approve the spec"
 
-It will **stop you** if any critical question is still unanswered, and tell you which ones. That is deliberate. An unanswered question at this stage becomes an expensive problem later.
+It will **stop you** if any question is still unanswered, and tell you which ones. That is deliberate. An unanswered question at this stage becomes an expensive problem later.
 
 Once approved, each requirement gets a permanent ID like `F-001-R-03`, which never changes.
+
+### Step 4b — When the client changes their mind
+
+They will. This is the normal case, not the exception, and the specification is deliberately cheap to change:
+
+> "They want capacity shown on the card, not in the dialog"
+
+If the phase has not gone to developers yet, the spec simply reopens and you absorb the change — and if it affects what is on screen, the client gets a short round on the changed screens, because their sign-off covered the screens they saw.
+
+If it has already gone to developers, the spec is not reopened and the change ships on its own instead. See **Step 6b**.
+
+Either way it is recorded: what changed, who asked, when, and which requirements now carry it.
 
 ### Step 5 — Consistency: do the features agree with each other?
 
@@ -216,6 +244,16 @@ Once approved, each requirement gets a permanent ID like `F-001-R-03`, which nev
 Then it packages everything up and produces the requirements document (PRD) that developers work from.
 
 It also writes you an **agenda for your next client call** — the questions still outstanding. When you have that call and feed the recording back in, those questions get closed automatically. The loop closes itself.
+
+### Step 6b — An urgent fix to something already delivered
+
+Phase 1 shipped months ago, you are deep in phase 2, and the client needs something in the delivered product changed now:
+
+> "They need the badge label fixed on retired categories — this can't wait for phase 2"
+
+**You do not scope it into phase 2 and you do not reopen phase 1.** It gets a short brief of its own and goes straight to `/bmad-build`, the toolkit's build workflow, which is built for exactly one change of this size. A full requirements document here would mean running a whole scoping process for a one-line fix.
+
+Once it is live, the record of what shipped is rebuilt so it stays true — which is what stops phase 3 being written against a product that no longer behaves the way phase 1's document described.
 
 ### Step 7 — Phase: move on to the next round
 
@@ -289,6 +327,10 @@ He never guesses. If he has not read something, he says so.
 
 **Example.** You hand it a 30-minute call recording. It comes back with three features, twelve pieces of evidence with timestamps, and five questions the client needs to answer.
 
+**When the new document contradicts a spec you already approved**, it does not edit that spec — it raises a **change record** against the feature, with the quote and the timestamp behind it. Whether that change reopens the spec or ships on its own is decided from how far the feature has got, and you are told which. It also asks whether the change affects the screens, because that decides whether the client has to look again.
+
+**Below an approved spec there is nothing to change**, so the same contradiction becomes an open question instead. One fact, one place — it is never recorded as both.
+
 ---
 
 ### `fdw-design` — build the prototype
@@ -343,18 +385,20 @@ When they press **Finish**, the page gives them a block of text to copy into the
 
 **A follow-up round.** When the specification turns up a question only the client can answer, you can send a short second packet with just that question. It does not re-open the design they already approved, and it never overwrites the document you already sent them.
 
+**If they contradict a spec that is already approved**, that is not a note to pass back to the design step — it is a change, and it is handed to you as one, with the command to record it. A correction that goes back as a comment leaves the specification quietly saying something the client has just told you is wrong.
+
 ---
 
 ### `fdw-elaborate` — write the specification
 
-**What it does.** Writes the full spec for one feature from the approved design. Sizes it. Records what depends on what. Sorts the open questions into "must answer" and "can wait". Locks the requirement IDs when you approve.
+**What it does.** Writes the full spec for one feature from the approved design. Sizes it. Records what depends on what. Sorts the open questions into "must answer" and "can wait". Locks the requirement IDs when you approve. Reopens the spec later when the client changes their mind, and records what changed.
 
-**When to use it.** After the client has approved the design. Not before — that ordering is the whole point.
+**When to use it.** After the client has approved the design. Not before — that ordering is the whole point. And again whenever a request lands against a spec you have already approved.
 
-**Say:** *"write the spec"* · *"elaborate F-003"* · *"спєка"* · *"now describe this properly"* · *"approve the spec"*
+**Say:** *"write the spec"* · *"elaborate F-003"* · *"спєка"* · *"now describe this properly"* · *"approve the spec"* · *"they've changed their mind on this"*
 
-**Reads:** the approved design, the corrections log, the original evidence.
-**Writes:** the specification.
+**Reads:** the approved design, the corrections log, the original evidence, and any changes raised since.
+**Writes:** the specification, including its revision history.
 
 **Example.** Ten requirements for Academy. Two trace back to quotes from the call; eight trace back to design decisions the client signed off. Approving is blocked until two client questions are answered.
 
@@ -366,20 +410,37 @@ When they press **Finish**, the page gives them a block of text to copy into the
 
 **If only the client can answer**, say *"send this to the client"* again — there is a short follow-up round for exactly this, which does not re-open the design they already signed off.
 
+**When the client changes their mind after you approved the spec**, say so and it reopens it. Clients change their minds constantly and the whole reason a spec is cheap to change is that this is normal — but never silently. Reopening is recorded with a reason, so six weeks later "why did this move" has an answer.
+
+It works out which of two situations you are in and tells you, rather than making you decide:
+
+- **The phase has not gone to developers yet.** The spec reopens and you absorb the change. If the change affects what is on screen, it takes the feature back to the drawing step as well and sends the client a short round on the changed screens — they signed off on *those* screens, so a visual change means their approval no longer covers it.
+- **It has already gone to developers.** The spec is not reopened. See `fdw-handoff` below.
+
+**It will not take your word for it that you absorbed a change.** When you close one off, it compares the requirements against what they said when the change arrived. If nothing actually changed, it says so. Marking a change absorbed without changing anything is how a specification ends up disagreeing with the record of what the client asked for.
+
+**Requirement IDs never move.** A requirement that changes keeps its number and is marked as amended; one that is withdrawn keeps its number *and its place* and is marked as superseded. Nothing is deleted, because the developers' document and the record of what shipped already refer to those numbers.
+
+**It will not approve a spec with an open change against it** — and unlike an unanswered question, you cannot override this one. An unanswered question is something nobody has decided yet, and choosing to proceed anyway is a judgment you are allowed to make. An open change is something you have already been told the spec gets wrong. There is no version of approving that on purpose.
+
 ---
 
 ### `fdw-consistency` — check the features against each other
 
-**What it does.** Finds contradictions between features, spots two features that are really one, works out the build order, catches the same thing being called three different names.
+**What it does.** Finds contradictions between features, spots two features that are really one, works out the build order, catches the same thing being called three different names. Also answers "which of our features does this new request touch?"
 
-**When to use it.** After intake adds new features. Before any handoff. Any time you are unsure whether things hang together.
+**When to use it.** After intake adds new features. Before any handoff. Any time you are unsure whether things hang together — or when a request comes in and you are not sure what it affects.
 
-**Say:** *"check consistency"* · *"do these features conflict"* · *"run the audit"* · *"what order should we build these"*
+**Say:** *"check consistency"* · *"do these features conflict"* · *"run the audit"* · *"what order should we build these"* · *"what does this request touch"*
 
-**Reads:** every feature and spec.
+**Reads:** every feature and spec, in every phase, plus what has already shipped.
 **Writes:** a report, plus the recorded relationships between features.
 
 **Example.** It reports that Academy repeats most of Events, recommends building Events first, and notices that Academy was approved ahead of the two features it depends on.
+
+**It compares against what has already shipped, not just against the phase you are in.** Narrowing to one phase narrows which features it raises findings *about* — it never narrows what they are measured against. This matters more than it sounds: the most expensive contradiction on an engagement is a feature being written now that repeats or contradicts something delivered two phases ago, and that one is invisible if you only look at the current round.
+
+**Ask it what a request touches** before you record a change anywhere. It searches everything, shipped work included, and each answer tells you whether that feature has gone to developers — which is what decides how the change is handled. It gives you ranked candidates and the command for each, not a decision; one request genuinely can touch three features.
 
 ---
 
@@ -400,20 +461,40 @@ When they press **Finish**, the page gives them a block of text to copy into the
 
 ### `fdw-handoff` — give it to the developers
 
-**What it does.** Checks what is ready. Counts the unanswered questions that would reach developers. Bundles the approved specs. Produces the requirements document. Writes the agenda for your next client call.
+**What it does.** Checks what is ready. Counts the unanswered questions that would reach developers. Bundles the approved specs. Produces the requirements document. Writes the agenda for your next client call. Keeps the record of what has shipped accurate, and sends an urgent change to already-delivered work straight to a developer without waiting for the next phase.
 
-**When to use it.** At the end of a phase.
+**When to use it.** At the end of a phase — and any time the client needs something fixed in what they already have.
 
-**Say:** *"hand off phase 1"* · *"we're done, make the PRD"* · *"bundle these specs"* · *"run the pre-flight"*
+**Say:** *"hand off phase 1"* · *"we're done, make the PRD"* · *"bundle these specs"* · *"run the pre-flight"* · *"they need this fixed in what we already shipped"*
 
-**Reads:** every approved spec in the phase.
-**Writes:** the bundle, the PRD, and the next call's agenda.
+**Reads:** every approved spec in the phase, plus the record of what previous phases shipped.
+**Writes:** the bundle, the PRD, the next call's agenda, and the brief for an urgent change.
 
 **Example.** Pre-flight says 4 features, 12 requirements, 0 unanswered critical questions. It bundles them and produces the PRD.
 
 **It stops if a critical question is still open.** The pre-flight report itself never stops you — it is what you run to decide. Bundling does: it will not hand development a specification with an unanswered blocker in it. You have two ways forward and it names both — bundle only the features that are clean, or say explicitly that you are proceeding anyway and why. Either way the decision is written into the bundle where the next person will find it.
 
 This is the last gate anything passes. A question that arrives *after* a spec was approved never goes past the earlier check again, so this is the only place it can be caught.
+
+**It also stops if a change is open against a spec in the bundle.** That is a sharper problem than an unanswered question, and worth separating: an unanswered question means nobody has decided something yet. An open change means you have already been told this specification is wrong and it still says the old thing. Handing that to developers is handing them a document you know is false.
+
+A change against a feature in a *different* phase never blocks your bundle. It ships beside the phase, not inside it — holding a round of work for something that already missed it is exactly backwards.
+
+**An urgent change to something already delivered.** A feature shipped in phase 1, you are writing phase 2, and the client needs it changed now. That is not a new feature and not a spec revision, and it must not wait for phase 2's handoff:
+
+> *"They need the badge label fixed on retired categories — urgent, can't wait."*
+
+It writes a short brief and you hand that to `/bmad-build`, the toolkit's build workflow. **Not a PRD** — a requirements document is a tool for scoping a whole round of work, and its full process is exactly the ceremony that urgency rules out. `/bmad-build` is built for precisely one change of this size.
+
+The brief stands on its own for a developer who has never seen any of your discovery notes: what changed and the client's own words for it, how the feature behaves today, what must be true afterwards, what not to touch, and the **real files in your codebase** the prototype was originally copied from — which is the single most useful thing this toolkit knows about code it does not own.
+
+It carries the delivered behaviour the change actually touches, and tells you how much it left out and where the rest is. Handing a build agent thirty-three requirements to explain a one-line change spends its whole attention before the change is even described.
+
+**The feature's status does not change.** It shipped; it stays shipped. That is a fact about what developers have, not about what you are working on, and moving it would corrupt the record of what phase 1 actually delivered.
+
+**Keeping "what has shipped" true.** Once the change is live, the spec is amended in place and the record of what shipped is rebuilt from it — each amended requirement marked with the change that moved it, and the original ship date left alone, because the phase shipped when it shipped. That record is what later phases are written against, so a phase 3 feature is built on what the product actually does rather than on what phase 1's requirements document said it would.
+
+There is a window between "the spec now says it" and "it is actually live". In that window the record says so explicitly rather than showing you the new wording as though it had already shipped.
 
 ---
 
@@ -451,6 +532,7 @@ discovery/
 | `spec.md` inside a feature folder | The specification. This is the main output. |
 | `client-packets/*.html` inside a feature folder | What you emailed the client. Open it in a browser. |
 | `decisions.md` | Why anything is the way it is. Search this when someone asks. |
+| `changes.md` inside a feature folder | Every change the client asked for after you approved that spec, and what it moved. |
 
 ### The one file not to edit
 
@@ -465,10 +547,13 @@ candidate → sliced → designing → client-review → design-approved
           → speccing → spec-approved → handed-off → shipped
 ```
 
-You do not need to memorise this. Two rules are worth knowing, because the toolkit enforces them:
+You do not need to memorise this. Three rules are worth knowing, because the toolkit enforces them:
 
 - **A spec cannot be written until the client has approved the design.**
 - **A feature cannot go to developers until its spec is approved.**
+- **Going backwards is normal and always allowed** — that is what happens when a client changes their mind before the work has gone to developers. It is never silent: the reason is recorded.
+
+Once a feature reaches `handed-off`, though, it stops moving. Developers have it, and that status is a statement about them rather than about you. A change at that point amends the specification in place and ships beside the phase; the feature stays where it is, so the record of what each phase delivered stays true.
 
 ---
 
@@ -510,7 +595,7 @@ When phase 1 is done:
 
 - **Unanswered questions.** Still open, still assigned to whoever owes the answer.
 - **Deferred features.** They **move**, keeping their ID, their evidence, their prototype, their spec, and the client's sign-off. Nothing is recreated from scratch.
-- **Open change requests.** Things raised after a spec was approved.
+- **Open change requests.** Things raised after a spec was approved, each with the quote behind it — plus anything you deliberately parked *for this phase specifically*, which resurfaces the moment it opens rather than being quietly forgotten.
 - **The decisions log.** Every "why", from the beginning.
 - **What has shipped.** So phase 2 features are written against what actually exists, not against a pile of old documents.
 
@@ -538,7 +623,7 @@ You are trying to jump a step. Each stage is a gate. Do the missing step first, 
 
 ### It refuses to approve my spec
 
-There are unanswered critical questions. It will name them and say who owes each answer. Chase them, or approve anyway with *"approve it, I accept the open blockers"* — it records what was let through.
+There are unanswered questions — any of them, not only the urgent ones. It will name them and say who owes each answer. Chase them, or approve anyway with *"approve it, I accept the open blockers"* — it records what was let through.
 
 This refusal is the most valuable thing the toolkit does. Every question you close here is one that does not become a problem for developers.
 
@@ -606,7 +691,29 @@ If it says questions are "not in the ledger", the spec has questions written in 
 
 ### It refuses to bundle the phase
 
-A critical question is still open on one of the features. Bundle only the clean ones — it names them — or say explicitly that you are handing off anyway and why. That reason is written into the bundle so the next reader knows.
+Either a critical question is still open on one of the features, or a change is. Bundle only the clean ones — it names them — or say explicitly that you are handing off anyway and why. That reason is written into the bundle so the next reader knows.
+
+### It will not let me approve, and "accept the open blockers" does not work
+
+Then it is a change, not a question. You can knowingly hand over an unanswered question; you cannot knowingly approve a specification that contradicts something already on record. Absorb the change first — say *"they've changed their mind on this"* and it walks you through it.
+
+### It says I did not really absorb the change
+
+You marked a change absorbed but the requirements are word for word what they were when it arrived. Edit the spec so it actually says the new thing, then close the change against the requirements that now carry it. If the answer is that you are *not* going to act on it, close it as dropped with the reason — that is a real outcome and it gets recorded.
+
+### The client changed their mind about something we already delivered
+
+Do not add it to the current phase and do not reopen the closed one. Say *"they need this fixed in what we already shipped"*. It writes a short brief and you hand that to `/bmad-build`. The feature stays marked as delivered, and once the fix is live the record of what shipped is rebuilt so later phases are written against the real product.
+
+### It says the phase is closed
+
+You are trying to add a feature to a phase that already went to developers, or move one into it. That phase's record is what it handed off, and adding to it now would make that record untrue — put the work in the open phase instead.
+
+Raising a *change* against something in a closed phase is different and is allowed, because that is exactly what an urgent fix to delivered work is.
+
+### A change I parked came back
+
+That is deliberate. When you defer a change to a named phase, it resurfaces the moment that phase opens. Deferring is a destination, not a way of losing something.
 
 ### My phase history looks incomplete
 
@@ -623,7 +730,7 @@ Say *"check the discovery store"*. It compares the master list against the folde
 **Do I need to know how to code?**
 No. You type in plain English. The prototypes are built for you.
 
-**Do I have to use all nine tools?**
+**Do I have to use all ten tools?**
 No. Intake and elaborate are the core. Everything else is there when you need it.
 
 **Can I skip the prototype and go straight to the spec?**
@@ -639,7 +746,16 @@ Run setup again and choose "already in flight". If you have already taken featur
 Yes. Install it separately in each project folder. Each keeps its own records.
 
 **What if the client changes their mind after approving?**
-That is expected. It opens a change record, notes whether the design is now wrong, and — if developers already have it — flags it for the next phase rather than quietly rewriting something being built.
+That is expected, and it is cheap on purpose. It opens a change record with the client's own words behind it, and works out which of two situations you are in. If the phase has not gone to developers, the spec reopens and you absorb it — and if the change affects the screens, the client sees the changed ones again. If developers already have it, the spec is amended in place and the change ships on its own through `/bmad-build` rather than waiting for a phase it has already missed. Either way nothing is rewritten quietly: the reason, the source and the requirements it moved are all recorded.
+
+**Something urgent broke in what we already delivered. Do I wait for the next phase?**
+No. That was the old answer and it was wrong for anything urgent. Say *"they need this fixed in what we already shipped"* — it writes a brief for `/bmad-build` and the fix ships on its own clock. The phase you are currently scoping is not disturbed.
+
+**Does a change to delivered work go through a PRD?**
+No. A requirements document is for scoping a whole round of work; running that process for one change is the delay you are trying to avoid. It goes to `/bmad-build`, which is built for a single change of that size.
+
+**How do I know which features a request affects?**
+Ask: *"what does this request touch?"* It searches every feature in every phase, including delivered ones, and tells you for each whether developers already have it — which is what decides how the change is handled.
 
 **Where does the final requirements document go?**
 Into your normal BMAD output folder, produced by BMad Method's own PRD tool. This toolkit prepares the inputs; that tool writes the document.
